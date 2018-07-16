@@ -9,8 +9,10 @@ For questions regarding SKESA, please contact
 
 I.  COMPILATION
 
-    Download source code for SKESA
+    Download current source code for SKESA
        $ git clone https://github.com/ncbi/SKESA
+    Alternatively, download last stable release from https://github.com/ncbi/SKESA/releases
+    Releases also include test data and precompiled binary.
 
     Do following:
        $ cd SKESA
@@ -22,13 +24,14 @@ I.  COMPILATION
        $ make -f Makefile.nongs
 
     BOOST install is expected by makefiles in the SKESA release. If you
-    do not have BOOST_PATH defined, please specify using a command like
+    do not have BOOST on the system path, please specify BOOST_PATH using a command like
        setenv BOOST_PATH /netopt/ncbi_tools64/boost-1.62.0-ncbi1
     before running make.
 
     These make files have been tested with BOOST v 1.62.0 and gcc v 4.9.
 
 ======================================================================
+
 II. SYNOPSIS
 
     Running
@@ -98,6 +101,7 @@ II. SYNOPSIS
     Note that --sra_run option is not available if SKESA is built using Makefile.nongs
     
 ======================================================================
+
 II. SHORT DESCRIPTION
     
     SKESA is a de-novo sequence read assembler for microbial genomes
@@ -155,6 +159,7 @@ II. SHORT DESCRIPTION
         estimate is different.
 
 ======================================================================
+
 III. USAGE EXAMPLES
 
      In all the examples below, we are providing 4 cores and have 48 Gb of memory.
