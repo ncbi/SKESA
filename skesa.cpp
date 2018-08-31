@@ -374,7 +374,7 @@ int main(int argc, const char* argv[]) {
         }
 
         if(argm.count("version")) {
-            cerr << "SKESA v.2.2";
+            cerr << "SKESA v.2.2.1";
 #ifdef SVN_REV
             cerr << "-SVN_" << SVN_REV;
 #endif
