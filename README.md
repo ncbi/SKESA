@@ -12,7 +12,9 @@ I.  COMPILATION
     Download current source code for SKESA
        $ git clone https://github.com/ncbi/SKESA
     Alternatively, download last stable release from https://github.com/ncbi/SKESA/releases
-    Releases also include test data and precompiled binary.
+    Releases also include test data and precompiled binary. Test data is available in example
+    subdirectory that has the command in file run.test for generating the SKESA assembly using
+    the test data.
 
     Do following:
        $ cd SKESA
