@@ -62,6 +62,8 @@ namespace DeBruijn {
     public:
         void Restart() { start(); }
         string Elapsed() const { return format(); }
+        void Stop() { stop (); }
+        void Resume() { resume(); }
     };
 
 
@@ -312,6 +314,52 @@ namespace DeBruijn {
                 size_t len = 2*(ReadLen()-shift);
                 m_readholderp->CopyBits(position, position+len, destination, 0, (len+63)/64);
             }
+            // returns clipped binary sequence in correct order
+            // assumes that destination is extended properly and filled with 0s  
+            // left/right refer to the original sequence  
+            void TrueBSeq(size_t left_clip, size_t right_clip, bool reverse_complement, uint64_t* destination) const {
+                auto Reverse = [](uint64_t& word) {
+                    word = ((word & 0x3333333333333333) << 2)  | ((word >> 2)  & 0x3333333333333333); // swap adjacent pairs
+                    word = ((word & 0x0F0F0F0F0F0F0F0F) << 4)  | ((word >> 4)  & 0x0F0F0F0F0F0F0F0F); // swap nibbles
+                    word = ((word & 0x00FF00FF00FF00FF) << 8)  | ((word >> 8)  & 0x00FF00FF00FF00FF); // swap bytes
+                    word = ((word & 0x0000FFFF0000FFFF) << 16) | ((word >> 16) & 0x0000FFFF0000FFFF); // swap 16 bit chunks
+                    word = ((word & 0x00000000FFFFFFFF) << 32) | ((word >> 32) & 0x00000000FFFFFFFF); // swap 32 bit chunks                                        
+                }; 
+
+                size_t position = m_position+m_readholderp->m_front_shift+2*right_clip;  // sequence stored reversed
+                size_t len = 2*(ReadLen()-right_clip-left_clip);
+                size_t destination_size = (len+63)/64;
+                
+                if(reverse_complement) {
+                    m_readholderp->CopyBits(position, position+len, destination, 0, destination_size);                   // already reversed; not complemented
+                    for(size_t p = 0; p < destination_size; ++p)  // complement (will also convert trailing As into Ts)
+                        destination[p] ^= 0xAAAAAAAAAAAAAAAA;
+                    int partial_bits = len%64;
+                    if(partial_bits > 0)                          // remove trailing Ts
+                        destination[destination_size-1] &= (1ULL << partial_bits) - 1;
+                } else {
+                    int shift_to_right_end = 64*destination_size-len;
+                    m_readholderp->CopyBits(position, position+len, destination, shift_to_right_end, destination_size);  // reversed and shifted to the end of the destination
+                    for(size_t p = 0; p < destination_size/2; ++p) {
+                        swap(destination[p], destination[destination_size-1-p]);
+                        Reverse(destination[p]);
+                        Reverse(destination[destination_size-1-p]);
+                    }
+                    if(destination_size%2)
+                        Reverse(destination[destination_size/2]);
+                }
+            }
+            // returns number of equal nucleotides (2bit) from the beginning
+            // could be longer than actual sequence length if sequence is not multiple of 32
+            static size_t CommomSeqLen(const uint64_t* seq1p, const uint64_t* seq2p, size_t word_len) {
+                auto last = seq1p+word_len;
+                auto mism = mismatch(seq1p, last, seq2p);
+                size_t extend = 32*(mism.first-seq1p);
+                if(mism.first != last)
+                    extend += (ffsll(*mism.first ^ *mism.second)-1)/2; // after ^ all matches are 0s; ffs returns 1-based position of the first bit set to 1
+            
+                return extend;
+            }
             string_iterator& operator++() {
                 if(m_read == m_readholderp->m_read_length.size())
                     return *this;
@@ -330,6 +378,7 @@ namespace DeBruijn {
                 hash<size_t> h2;
                 return h1(m_readholderp)^h2(m_position); 
             }
+            struct SHash { size_t operator()(const string_iterator& is) const { return is.Hash(); } };
             bool HasMate() const { return m_readholderp->m_contains_paired; }
             int PairType() const {
                 if(!m_readholderp->m_contains_paired)
@@ -396,7 +445,7 @@ namespace DeBruijn {
             }
             int partial_bits = (destination_bit_from+bit_to-bit_from)%64;
             if(partial_bits > 0) {
-                uint64_t mask = (uint64_t(1) << partial_bits) - 1;
+                uint64_t mask = (1ULL << partial_bits) - 1;
                 destination[destination_size-1] &= mask;
             }
         }
