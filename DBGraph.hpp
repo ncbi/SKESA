@@ -225,6 +225,12 @@ namespace DeBruijn {
             for(auto& v : m_visited) 
                 v = 0;            
         }
+
+        void SetColor(const Node& node, uint8_t mask) {
+            m_visited[node.Index()].m_atomic |= mask;
+        }
+        uint8_t GetColor(const Node& node) const { return IsVisited(node); }
+        
         
         struct Successor {
             Successor(const Node& node, char c) : m_node(node), m_nt(c) {}
@@ -469,6 +475,15 @@ namespace DeBruijn {
         void ClearAllVisited() { // clears all visited
             for(auto it = m_graph_kmers.Begin(); it != m_graph_kmers.End(); ++it)
                it.GetMapped()->m_data .m_atomic &= ~eAll;
+        }
+        
+        void SetColor(const Node& node, uint8_t mask) {
+            auto& count = node.GetMapped(m_graph_kmers)->m_data;
+            count.m_atomic |= (uint64_t(mask) << 40);
+        }
+        uint8_t GetColor(const Node& node) const {
+            auto& count = node.GetMapped(m_graph_kmers)->m_data;
+            return (count.m_atomic&eAll) >> 40;
         }
         
         struct Successor {
