@@ -522,18 +522,24 @@ namespace DeBruijn {
             pair<int, typename list_t::SNode*> Find(const large_t& k, int hint) {
                 if(BucketBlock > 0) {
                     //try exact position first
-                    if(isEmpty(hint)) 
+                    if(isEmpty(hint)) {
                         return make_pair(BucketBlock+1, nullptr);
-                    else if(m_data[hint].first == k)
-                        return make_pair(hint, nullptr);
+                    } else {
+                        Wait(hint);
+                        if(m_data[hint].first == k)
+                            return make_pair(hint, nullptr);
+                    }
 
                     //scan array    
                     for(int shift = 0; shift < BucketBlock; ++shift) {
                         if(shift != hint) {
-                            if(isEmpty(shift)) 
+                            if(isEmpty(shift)) {
                                 return make_pair(BucketBlock+1, nullptr);
-                            else if(m_data[shift].first == k)
-                                return make_pair(shift, nullptr);
+                            } else {
+                                Wait(shift);
+                                if(m_data[shift].first == k)
+                                    return make_pair(shift, nullptr);
+                            }
                         }
                     }       
                 }
