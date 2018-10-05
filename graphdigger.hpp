@@ -1679,9 +1679,11 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
             return false;
         }
 
-        vector<Successor> GetReversibleNodeSuccessors(const Node& node) const {
+        vector<Successor> GetReversibleNodeSuccessors(const Node& node, int* numbackp = nullptr) const {
             vector<Successor> neighbors = m_graph.GetNodeSuccessors(node);
             FilterNeighbors(neighbors, true);
+            if(numbackp != nullptr)
+                *numbackp = 0;
             for(auto& neighbor : neighbors) {
                 vector<Successor> step_back = m_graph.GetNodeSuccessors(m_graph.ReverseComplement(neighbor.m_node));
                 FilterNeighbors(step_back, true);
@@ -1696,6 +1698,8 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                     neighbors.clear();
                     return neighbors;
                 }
+                if(numbackp != nullptr)
+                    *numbackp = max(*numbackp, (int)step_back.size());
             }
             return neighbors;
         }
@@ -1712,7 +1716,15 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                 for(auto& suc : successors) {
                     abundance += m_graph.Abundance(suc.m_node);
                 }
-                sort(successors.begin(), successors.end(), [&](const Successor& a, const Successor& b) {return m_graph.Abundance(a.m_node) > m_graph.Abundance(b.m_node);});
+                sort(successors.begin(), successors.end(), [&](const Successor& a, const Successor& b) 
+                     {
+                         auto abundancea = m_graph.Abundance(a.m_node);
+                         auto abundanceb = m_graph.Abundance(b.m_node);
+                         if(abundancea == abundanceb)
+                             return a.m_nt < b.m_nt;
+                         else
+                             return abundancea > abundanceb;
+                     });
                 for(int j = successors.size()-1; j > 0 && m_graph.Abundance(successors.back().m_node) <= m_fraction*abundance; --j) 
                     successors.pop_back();            
             }
@@ -2893,6 +2905,61 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
 
             return paired_reads;
         }
+
+        // remove read parts not supported by graph
+        uint8_t CheckAndClipReadLite(string& read) {
+            int kmer_len = m_graph.KmerLen();
+            int rlen = read.size();
+            if(rlen < kmer_len) {
+                read.clear();
+                return 0;
+            }
+
+            deque<Node> nodes;
+            CReadHolder rh(false);
+            rh.PushBack(read);
+            for(CReadHolder::kmer_iterator ik = rh.kbegin(kmer_len) ; ik != rh.kend(); ++ik)   // iteration from last kmer to first  
+                nodes.push_front(m_graph.GetNode(*ik));            
+
+            vector<int> bases(read.size(), 0);
+            for(int ek = 0; ek < (int)nodes.size(); ++ek) {
+                Node node = nodes[ek];
+                if(node.isValid() && GoodNode(node)) {
+                    int left_kmer_end = ek;    // left kmer position on read
+                    int right_kmer_end = left_kmer_end+kmer_len-1; // right kmer position on read
+                    for(int p = left_kmer_end; p <= right_kmer_end; ++p)
+                        bases[p] = 1;
+                }
+            }
+
+            int left = 0;                                           // first good position    
+            int len = 0;                                            // number of consecutive good positions    
+            for(int k = 0; k < rlen; ++k) {
+                for( ; k < rlen && !bases[k]; ++k);                 // skip bad bases    
+                int current_left = k;
+                int current_len = 0;
+                for( ; k < rlen && bases[k]; ++k, ++current_len);   // count adjacent good bases 
+                if(current_len > len) {
+                    left = current_left;
+                    len = current_len;
+                }
+            }
+
+
+            uint8_t color = 0;
+            if(len < kmer_len) {
+                read.clear();
+            } else {
+                read = read.substr(left, len); 
+                for(int ek = left; ek <= left+len-kmer_len; ++ek) {
+                    auto& node = nodes[ek];
+                    if(node.isValid())
+                        color |= m_graph.GetColor(node);
+                }
+            }
+
+            return color;
+        }        
         
     private:
         // Prepares one of the mates of a read pair for connection
