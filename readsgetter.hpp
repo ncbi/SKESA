@@ -192,12 +192,23 @@ namespace DeBruijn {
                 total_seq += reads[0].TotalSeq()+reads[1].TotalSeq();
             }
 
+            map<size_t, size_t> clipping_points;
             if(m_adapters.Size() > 0) {
                 list<function<void()>> jobs;
-                for(auto& reads : m_reads)
-                    jobs.push_back(bind(&CReadsGetter::ClipAdaptersFromReadsJob, this, ref(reads)));
+                list<map<size_t, size_t>> clipping_points_for_threads;
+                for(auto& reads : m_reads) {
+                    clipping_points_for_threads.emplace_back();
+                    jobs.push_back(bind(&CReadsGetter::ClipAdaptersFromReadsJob, this, ref(reads), ref(clipping_points_for_threads.back())));
+                }
                 RunThreads(m_ncores, jobs);
+                for(auto& cp : clipping_points_for_threads) {
+                    for(auto& count : cp)
+                        clipping_points[count.first] += count.second; 
+                }
             }
+
+            for(auto& count : clipping_points)
+                cerr << "Clipping point: " << count.first << " " << count.second << endl;
 
             int64_t total_reads_after = 0;
             int64_t total_seq_after = 0;
@@ -228,7 +239,7 @@ namespace DeBruijn {
             return -1;                
         }
 
-        void ClipAdaptersFromReadsJob(array<CReadHolder,2>& reads) {
+        void ClipAdaptersFromReadsJob(array<CReadHolder,2>& reads, map<size_t, size_t>& clipping_points) {
             array<CReadHolder,2> cleaned_reads{true, false};
 
             {
@@ -238,6 +249,12 @@ namespace DeBruijn {
                 for( ; is2 != reads[0].send(); ++is1, ++is1, ++is2, ++is2) {
                     int p1 = FindAdapterInRead(is1);
                     int p2 = FindAdapterInRead(is2);
+
+                    if(p1 >= 0)
+                        ++clipping_points[p1];
+                    if(p2 >= 0)
+                        ++clipping_points[p2];
+
                     if(p1 < 0 && p2 < 0) {              // no adapters      
                         cleaned_reads[0].PushBack(is1);
                         cleaned_reads[0].PushBack(is2);                                 
@@ -270,6 +287,10 @@ namespace DeBruijn {
             {
                 for(CReadHolder::string_iterator is = reads[1].sbegin() ;is != reads[1].send(); ++is) {
                     int p = FindAdapterInRead(is);
+
+                    if(p >= 0)
+                        ++clipping_points[p];
+
                     if(p < 0)
                         cleaned_reads[1].PushBack(is); 
                     else if(p == 0)
