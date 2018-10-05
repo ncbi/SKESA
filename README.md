@@ -5,9 +5,8 @@ For questions regarding SKESA, please contact
     Alexandre Souvorov (souvorov@ncbi.nlm.nih.gov)
     Richa Agarwala (agarwala@ncbi.nlm.nih.gov)
 
-======================================================================
 
-I.  COMPILATION
+## Compilation
 
     Download current source code for SKESA
        $ git clone https://github.com/ncbi/SKESA
@@ -32,9 +31,8 @@ I.  COMPILATION
 
     These make files have been tested with BOOST v 1.62.0 and gcc v 4.9.
 
-======================================================================
 
-II. SYNOPSIS
+## Synopsis
 
     Running
        skesa 
@@ -102,9 +100,8 @@ II. SYNOPSIS
 
     Note that --sra_run option is not available if SKESA is built using Makefile.nongs
     
-======================================================================
 
-II. SHORT DESCRIPTION
+## Short description
     
     SKESA is a de-novo sequence read assembler for microbial genomes
     based on DeBruijn graphs. It uses conservative heuristics and is designed to
@@ -160,9 +157,8 @@ II. SHORT DESCRIPTION
         reads but may give very small differences if read order is changed and insert size
         estimate is different.
 
-======================================================================
 
-III. USAGE EXAMPLES
+## Usage examples
 
      In all the examples below, we are providing 4 cores and have 48 Gb of memory.
 
@@ -190,4 +186,9 @@ III. USAGE EXAMPLES
 
        $ skesa --sra_run SRR1695624 --sra_run SRR1745628 --cores 4 --memory 48 --use_paired_ends > SAMN03218571.skesa.fa
 
-======================================================================
+## Citation
+
+Alexandre Souvorov, Richa Agarwala and David J. Lipman. 
+**SKESA: strategic k-mer extension for scrupulous assemblies.**
+*Genome Biology* 2018 **19**:153.
+[doi.org/10.1186/s13059-018-1540-z](https://doi.org/10.1186/s13059-018-1540-z)
