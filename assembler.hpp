@@ -63,7 +63,6 @@ namespace DeBruijn {
         // steps - number of assembly iterations from minimal to maximal kmer size in reads
         // min_count - minimal kmer count to be included in a de Bruijn graph
         // min_kmer - the minimal kmer size for the main steps
-        // usepairedends - whether or not to use paired ends
         // max_kmer_paired - insert size (0 if not known)
         // maxkmercount - the minimal average count for estimating the maximal kmer
         // memory - the upper bound for memory use (GB)
@@ -73,9 +72,10 @@ namespace DeBruijn {
         using GraphDigger = CDBGraphDigger<DBGraph>;        
         
         template<typename... GraphArgs>
-        CDBGAssembler(double fraction, int jump, int low_count, int steps, int min_count, int min_kmer, bool usepairedends, 
-                      int max_kmer_paired, int maxkmercount, int ncores, list<array<CReadHolder,2>>& raw_reads, TStrList seeds, bool allow_snps, bool estimate_min_count, GraphArgs... gargs) : 
-            m_fraction(fraction), m_jump(jump), m_low_count(low_count), m_steps(steps), m_min_count(min_count), m_min_kmer(min_kmer), m_usepairedends(usepairedends),
+        CDBGAssembler(double fraction, int jump, int low_count, int steps, int min_count, int min_kmer, bool forcesinglereads,
+                      int max_kmer_paired, int maxkmercount, int ncores, list<array<CReadHolder,2>>& raw_reads, TStrList seeds, 
+                      bool allow_snps, bool estimate_min_count, GraphArgs... gargs) : 
+            m_fraction(fraction), m_jump(jump), m_low_count(low_count), m_steps(steps), m_min_count(min_count), m_min_kmer(min_kmer),
             m_max_kmer_paired(max_kmer_paired), m_maxkmercount(maxkmercount), m_ncores(ncores), m_average_count(0), m_raw_reads(raw_reads) {
 
             m_max_kmer = m_min_kmer;
@@ -88,10 +88,18 @@ namespace DeBruijn {
 
             double total_seq = 0;
             size_t total_reads = 0;
+            size_t paired = 0;
             for(auto& reads : m_raw_reads) {
+                if(forcesinglereads) {
+                    for(CReadHolder::string_iterator is = reads[0].sbegin(); is != reads[0].send(); ++is)
+                        reads[1].PushBack(is);
+                    reads[0].Clear();
+                }
                 total_seq += reads[0].TotalSeq()+reads[1].TotalSeq();
                 total_reads += reads[0].ReadNum()+reads[1].ReadNum();
+                paired += reads[0].ReadNum();
             }
+            bool usepairedends = paired > 0;
  
             //graph for minimal kmer
             double average_count = GetGraph(m_min_kmer, m_raw_reads, true, estimate_min_count ? total_seq : 0, gargs...);
@@ -192,8 +200,8 @@ namespace DeBruijn {
             cerr << endl << "Average count: " << average_count << " Max kmer: " << m_max_kmer << endl;
             
             //estimate insert size
-            if(steps > 1 || m_usepairedends) {
-                if(m_max_kmer_paired == 0) {
+            if(steps > 1 || usepairedends) {
+                if(m_max_kmer_paired == 0 && usepairedends) {
                     size_t mates = 0;
                     for(auto& rh : m_raw_reads)
                         mates += rh[0].ReadNum();
@@ -273,7 +281,7 @@ namespace DeBruijn {
             }
             
             // three additional iterations with kmers (usually) longer than read length and upto insert size
-            if(m_usepairedends && m_insert_size > 0 && m_max_kmer_paired > 1.5*m_max_kmer) {
+            if(usepairedends && m_insert_size > 0 && m_max_kmer_paired > 1.5*m_max_kmer) {
                 ConnectPairsIteratively();
 
                 array<int,3> long_kmers;
@@ -887,7 +895,6 @@ namespace DeBruijn {
         int m_steps;                                         // number of main steps
         int m_min_count;                                     // minimal kmer count to be included in a de Bruijn graph
         int m_min_kmer;                                      // the minimal kmer size for the main steps
-        bool m_usepairedends;                                // whether or not to use paired ends
         int m_max_kmer_paired;                               // insert size
         int m_insert_size;                                   // upper bound for the insert size
         int m_maxkmercount;                                  // the minimal average count for estimating the maximal kmer

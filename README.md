@@ -1,10 +1,11 @@
 # SKESA - Strategic Kmer Extension for Scrupulous Assemblies
-Version 2.2
+Version 2.3
 
 For questions regarding SKESA, please contact
     Alexandre Souvorov (souvorov@ncbi.nlm.nih.gov)
     Richa Agarwala (agarwala@ncbi.nlm.nih.gov)
 
+Please [cite](#citation)  our paper.
 
 ## Compilation
 
@@ -62,7 +63,8 @@ For questions regarding SKESA, please contact
                                     times for different runs) [string]
       --fastq arg                   Input fastq file(s) (could be used multiple 
                                     times for different runs) [string]
-      --gz                          Input fasta/fastq files are gzipped [flag]
+      --use_paired_ends             Indicates that a single (not comma separated) 
+                                    fasta/fastq file contains paired reads [flag]
       --sra_run arg                 Input sra run accession (could be used multiple
                                     times for different runs) [string]
       --contigs_out arg             Output file for contigs (stdout if not 
@@ -76,8 +78,6 @@ For questions regarding SKESA, please contact
                                     the maximal kmer length in reads [integer]
       --vector_percent arg (=0.05)  Count for  vectors as a fraction of the read 
                                     number (1. disables) [float (0,1]]
-      --use_paired_ends             Use pairing information from paired reads in 
-                                    input [flag]
       --insert_size arg             Expected insert size for paired reads (if not 
                                     provided, it will be estimated) [integer]
       --steps arg (=11)             Number of assembly iterations from minimal to 
@@ -90,6 +90,7 @@ For questions regarding SKESA, please contact
       --allow_snps                  Allow additional step for snp discovery [flag]
     
     Debugging options:
+      --force_single_ends           Don't use paired-end information [flag]
       --seeds arg                   Input file with seeds [string]
       --all arg                     Output fasta for each iteration [string]
       --dbg_out arg                 Output kmer file [string]
@@ -102,7 +103,7 @@ For questions regarding SKESA, please contact
     
 
 ## Short description
-    
+
     SKESA is a de-novo sequence read assembler for microbial genomes
     based on DeBruijn graphs. It uses conservative heuristics and is designed to
     create breaks at repeat regions in the genome. This leads to excellent sequence
@@ -114,18 +115,24 @@ For questions regarding SKESA, please contact
 
     SKESA can process read information by accessing reads from SRA (option --sra_run)
     or from files in fasta (option --fasta) or fastq (option --fastq) format. Any
-    combination of input streams is allowed. For paired reads, if a single file is
-    specified, reads are expected to be interleaved with first mate followed by the
-    second. To specify a separate file for each mate, filenames separated by a comma
-    for first mate followed by the second mate are listed and in this case, the order
-    of reads is expected to be same in files for both mates. A limitation of the current
-    release is that in case multiple streams of paired reads are provided, it is assumed
-    that all streams have the same insert size. User can explicitly specify expected
+    combination of input streams is allowed. Files could be gzipped, which is recognized 
+    automatically. 
+    
+    When accessing reads from SRA SKESA automatically determines if the read set consists of 
+    paired-end or single-end reads. For fasta/fastq input of paired reads with separate files 
+    for each mate, filenames separated by a comma for first mate followed by the second mate 
+    are listed and in this case, the order of reads is expected to be same in files for both mates. 
+    Alternatively, a single file with both mates could be specified. In this case the reads are 
+    expected to be interleaved with first mate followed by the second, and the option --use_paired_ends 
+    must be used.
+    
+    A limitation of the current release is that in case multiple streams of paired reads are provided, 
+    it is assumed that all streams have the same insert size. User can explicitly specify expected
     insert size for the reads (option --insert_size). Otherwise, a sample of input
     reads is used to estimate the expected insert size. This sampling may lead to very
     small differences in assembly of the same read set if the order of reads is different
     and selected sample gives a difference in expected insert size.
-
+    
     Two additional options users may wish to specify depending on the resources
     available to them are as follows:
         1. the number of cores (option --cores) and
@@ -168,23 +175,23 @@ For questions regarding SKESA, please contact
 
      Example of an assembly that directly accesses SRA for a paired read set SRR1960353 is:
 
-       $ skesa --sra_run SRR1960353 --cores 4 --memory 48 --use_paired_ends > SRR1960353.skesa.fa
+       $ skesa --sra_run SRR1960353 --cores 4 --memory 48 > SRR1960353.skesa.fa
 
      Example of an assembly that uses separate fastq files for each mate of SRR1703350 is:
 
-       $ skesa --fastq SRR1703350_1.fq,SRR1703350_2.fq --cores 4 --memory 48 --use_paired_ends > SRR1703350.skesa.fa
+       $ skesa --fastq SRR1703350_1.fq,SRR1703350_2.fq --cores 4 --memory 48 > SRR1703350.skesa.fa
 
      Example of an assembly that uses interleaved mates for SRR1703350 as fastq input is:
 
-       $ skesa --fastq SRR1703350.fq --cores 4 --memory 48 --use_paired_ends > SRR1703350.skesa.fa
+       $ skesa --fastq SRR1703350.fq --use_paired_ends --cores 4 --memory 48 > SRR1703350.skesa.fa
 
      Example of an assembly that uses reads from SRA for SRR1695624 and gzipped fasta for SRR1745628 is:
 
-       $ skesa --sra_run SRR1695624 --fasta SRR1745628.fa.gz --gz --cores 4 --memory 48 --use_paired_ends > SAMN03218571.skesa.fa
+       $ skesa --sra_run SRR1695624 --fasta SRR1745628.fa.gz --use_paired_ends --cores 4 --memory 48 > SAMN03218571.skesa.fa
 
      Example of the same assembly as above done with both runs accessed from SRA is:
 
-       $ skesa --sra_run SRR1695624 --sra_run SRR1745628 --cores 4 --memory 48 --use_paired_ends > SAMN03218571.skesa.fa
+       $ skesa --sra_run SRR1695624 --sra_run SRR1745628 --cores 4 --memory 48 > SAMN03218571.skesa.fa
 
 ## Citation
 

@@ -65,10 +65,9 @@ namespace DeBruijn {
 //           files specified as a list separated by comma with file for first mate followed by the file for second mate.
 //      ncores - number of cores
 //      usepairedends - flag to indicate that input reads are paired
-//      gzipped - flag to indicate that input files are gzipped
 
-        CReadsGetter(const vector<string>& sra_list, const vector<string>& fasta_list, const vector<string>& fastq_list, int ncores, bool usepairedends, bool gzipped) : 
-            m_ncores(ncores), m_usepairedends(usepairedends), m_gzipped(gzipped) {
+        CReadsGetter(const vector<string>& sra_list, const vector<string>& fasta_list, const vector<string>& fastq_list, int ncores, bool usepairedends) : 
+            m_ncores(ncores), m_usepairedends(usepairedends) {
 
             CStopWatch timer;
             timer.Restart();
@@ -86,8 +85,6 @@ namespace DeBruijn {
             size_t total = 0;
             size_t paired = 0;
             for(auto& reads : m_reads) {
-
-
                 total += reads[0].ReadNum()+reads[1].ReadNum();
                 paired += reads[0].ReadNum();
             }
@@ -95,7 +92,7 @@ namespace DeBruijn {
             if(total == 0)
                 throw runtime_error("No valid reads available for assembly");
     
-            if(m_usepairedends)
+            if(paired > 0)
                 cerr << "Total mates: " << total << " Paired reads: " << paired/2 << endl;
             else
                 cerr << "Total reads: " << total << endl;
@@ -476,13 +473,21 @@ namespace DeBruijn {
                 return true;
             };
 
-            auto OpenStream = [] (const string& file, bool gzipped, bool isfasta, boost::iostreams::filtering_istream& is) {
+            auto OpenStream = [] (const string& file, bool isfasta, boost::iostreams::filtering_istream& is) {
+
+                ifstream gztest(file, ios_base::in|ios_base::binary);
+                if(!gztest.is_open())
+                    throw runtime_error("Error opening "+file);
+                array<uint8_t,2> gzstart;
+                if(!gztest.read(reinterpret_cast<char*>(gzstart.data()), 2))
+                    throw runtime_error("Invalid file "+file);
+                bool gzipped = (gzstart[0] == 0x1f && gzstart[1] == 0x8b);
+                gztest.close();
+
                 ios_base::openmode mode = ios_base::in;
                 if(gzipped)
                     mode |= ios_base::binary;
                 boost::iostreams::file_source f{file, mode};
-                if(!f.is_open())
-                    throw runtime_error("Error opening "+file);
                 if(gzipped)
                     is.push(boost::iostreams::gzip_decompressor());
                 is.push(f);
@@ -518,7 +523,7 @@ namespace DeBruijn {
                 size_t comma = file.find(',');
                 if(comma == string::npos) {
                     boost::iostreams::filtering_istream is;
-                    OpenStream(file, m_gzipped, isfasta, is);
+                    OpenStream(file, isfasta, is);
 
                     if(!m_usepairedends) {
                         while(NextRead(acc1, read1, isfasta, is, file))
@@ -547,20 +552,16 @@ namespace DeBruijn {
                 } else {
                     boost::iostreams::filtering_istream is1;
                     string file1 = file.substr(0,comma);
-                    OpenStream(file1, m_gzipped, isfasta, is1);
+                    OpenStream(file1, isfasta, is1);
                     boost::iostreams::filtering_istream is2;
                     string file2 = file.substr(comma+1);
-                    OpenStream(file2, m_gzipped, isfasta, is2);
-                    int p = m_usepairedends ? 0 : 1;
+                    OpenStream(file2, isfasta, is2);
                     while(NextRead(acc1, read1, isfasta, is1, file1)) {
                         if(NextRead(acc2, read2, isfasta, is2, file2)) {
-                            InsertRead(read1, all_reads[p], file1);
-                            InsertRead(read2, all_reads[p], file2);
+                            InsertRead(read1, all_reads[0], file1);
+                            InsertRead(read2, all_reads[0], file2);
                         } else {
-                            if(m_usepairedends)
-                                throw runtime_error("Files "+file+" contain different number of mates");
-                            else
-                                InsertRead(read1, all_reads[p], file1);
+                            throw runtime_error("Files "+file+" contain different number of mates");
                         }
                     }
                 }
@@ -586,7 +587,6 @@ namespace DeBruijn {
 
         int m_ncores;
         bool m_usepairedends;
-        bool m_gzipped;
         list<array<CReadHolder,2>> m_reads;
         int m_kmer_for_adapters;
         CKmerMap<int> m_adapters;   

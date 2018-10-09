@@ -306,12 +306,12 @@ int main(int argc, const char* argv[]) {
     int min_count;
     int min_kmer;
     bool usepairedends;
+    bool forcesinglereads;
     int maxkmercount;
     int max_kmer_paired = 0;
     vector<string> sra_list;
     vector<string> fasta_list;
     vector<string> fastq_list;
-    bool gzipped;
     bool allow_snps;
     bool estimate_min_count = true;
 
@@ -329,7 +329,7 @@ int main(int argc, const char* argv[]) {
     input.add_options()
         ("fasta", value<vector<string>>(), "Input fasta file(s) (could be used multiple times for different runs) [string]")
         ("fastq", value<vector<string>>(), "Input fastq file(s) (could be used multiple times for different runs) [string]")
-        ("gz", "Input fasta/fastq files are gzipped [flag]")
+        ("use_paired_ends", "Indicates that a single (not comma separated) fasta/fastq file contains paired reads [flag]")
 #ifndef NO_NGS
         ("sra_run", value<vector<string>>(), "Input sra run accession (could be used multiple times for different runs) [string]")
 #endif
@@ -341,7 +341,6 @@ int main(int argc, const char* argv[]) {
         ("min_count", value<int>(), "Minimal count for kmers retained for comparing alternate choices [integer]")
         ("max_kmer_count", value<int>(), "Minimum acceptable average count for estimating the maximal kmer length in reads [integer]")
         ("vector_percent", value<double>()->default_value(0.05, "0.05"), "Count for  vectors as a fraction of the read number (1. disables) [float (0,1]]")
-        ("use_paired_ends", "Use pairing information from paired reads in input [flag]")
         ("insert_size", value<int>(), "Expected insert size for paired reads (if not provided, it will be estimated) [integer]")
         ("steps", value<int>()->default_value(11), "Number of assembly iterations from minimal to maximal kmer length in reads [integer]")
         ("fraction", value<double>()->default_value(0.1, "0.1"), "Maximum noise to signal ratio acceptable for extension [float [0,1)]")
@@ -351,30 +350,41 @@ int main(int argc, const char* argv[]) {
 
     options_description debug("Debugging options");
     debug.add_options()
+        ("force_single_ends", "Don't use paired-end information [flag]")
         ("seeds", value<string>(), "Input file with seeds [string]")
         ("all", value<string>(), "Output fasta for each iteration [string]")
         ("dbg_out", value<string>(), "Output kmer file [string]")
         ("hist", value<string>(), "File for histogram [string]")
         ("connected_reads", value<string>(), "File for connected paired reads [string]");
 
+    options_description deprecated("");
+    deprecated.add_options()
+        ("gz", "Input fasta/fastq files are gzipped [flag]");
+
     options_description all("");
-    all.add(general).add(input).add(assembly).add(debug); 
+    all.add(general).add(input).add(assembly).add(debug).add(deprecated); 
+
+    options_description visible("");
+    visible.add(general).add(input).add(assembly).add(debug);
 
     try {
         variables_map argm;                                // boost arguments
         store(parse_command_line(argc, argv, all), argm);
         notify(argm);    
 
+        if(argm.count("gz"))
+            cerr << "WARNING: option --gz is deprecated - gzipped files are now recognized automatically" << endl;       
+
         if(argm.count("help")) {
 #ifdef SVN_REV
             cout << "SVN revision:" << SVN_REV << endl << endl;
 #endif
-            cout << all << "\n";
+            cout << visible << "\n";
             return 0;
         }
 
         if(argm.count("version")) {
-            cout << "SKESA v.2.2.2";
+            cout << "SKESA v.2.3.0";
 #ifdef SVN_REV
             cout << "-SVN_" << SVN_REV;
 #endif
@@ -388,7 +398,7 @@ int main(int argc, const char* argv[]) {
 #endif
                                                      ) {
             cerr << "Provide some input reads" << endl;
-            cerr << all << "\n";
+            cerr << visible << "\n";
             return 1;
         }
 
@@ -418,7 +428,6 @@ int main(int argc, const char* argv[]) {
             if(fastq_list.size() != num)
                 cerr << "WARNING: duplicate input entries were removed from fastq file list" << endl; 
         }
-        gzipped = argm.count("gz");
         allow_snps = argm.count("allow_snps");
    
         ncores = thread::hardware_concurrency();
@@ -495,6 +504,7 @@ int main(int argc, const char* argv[]) {
         }
 
         usepairedends = argm.count("use_paired_ends");
+        forcesinglereads = argm.count("force_single_ends");
 
         TStrList seeds;
         if(argm.count("seeds")) {
@@ -530,7 +540,7 @@ int main(int argc, const char* argv[]) {
         }
 
         int low_count = max(min_count, 2); 
-        CReadsGetter readsgetter(sra_list, fasta_list, fastq_list, ncores, usepairedends, gzipped);
+        CReadsGetter readsgetter(sra_list, fasta_list, fastq_list, ncores, usepairedends);
 
         if(argm.count("hash_count")) {
             int estimated_kmer_num =  argm["estimated_kmers"].as<int>();
@@ -545,7 +555,9 @@ int main(int argc, const char* argv[]) {
             } else {
                 cerr << "Adapters clip is disabled" << endl;
             }
-            CDBGAssembler<CDBHashGraph> assembler(fraction, jump, low_count, steps, min_count, min_kmer, usepairedends, max_kmer_paired, maxkmercount, ncores, readsgetter.Reads(), seeds, allow_snps, estimate_min_count, estimated_kmer_num, skip_bloom_filter); 
+            CDBGAssembler<CDBHashGraph> assembler(fraction, jump, low_count, steps, min_count, min_kmer, forcesinglereads, max_kmer_paired, 
+                                                  maxkmercount, ncores, readsgetter.Reads(), seeds, allow_snps, estimate_min_count, 
+                                                  estimated_kmer_num, skip_bloom_filter); 
             PrintRslt(assembler, argm);
         } else {
             int memory = argm["memory"].as<int>();
@@ -559,7 +571,8 @@ int main(int argc, const char* argv[]) {
             } else {
                 cerr << "Adapters clip is disabled" << endl;
             }
-            CDBGAssembler<CDBGraph> assembler(fraction, jump, low_count, steps, min_count, min_kmer, usepairedends, max_kmer_paired, maxkmercount, ncores, readsgetter.Reads(), seeds, allow_snps, estimate_min_count, memory); 
+            CDBGAssembler<CDBGraph> assembler(fraction, jump, low_count, steps, min_count, min_kmer, forcesinglereads, max_kmer_paired, 
+                                              maxkmercount, ncores, readsgetter.Reads(), seeds, allow_snps, estimate_min_count, memory); 
             PrintRslt(assembler, argm);
         }
 
