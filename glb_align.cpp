@@ -85,7 +85,7 @@ string CCigar::CigarString(int qstart, int qlen) const {
     return cigar;
 }
 
-string CCigar::DetailedCigarString(int qstart, int qlen, const  char* query, const  char* subject) const {
+string CCigar::DetailedCigarString(int qstart, int qlen, const  char* query, const  char* subject, bool include_soft_clip) const {
     string cigar;
     query += m_qfrom;
     subject += m_sfrom;
@@ -114,14 +114,55 @@ string CCigar::DetailedCigarString(int qstart, int qlen, const  char* query, con
         }
     }
 
-    int missingstart = qstart+m_qfrom;
-    if(missingstart > 0)
-        cigar = to_string(missingstart)+"S"+cigar;
-    int missingend = qlen-1-m_qto-qstart;
-    if(missingend > 0)
-        cigar += to_string(missingend)+"S";
+    if(include_soft_clip) {
+        int missingstart = qstart+m_qfrom;
+        if(missingstart > 0)
+            cigar = to_string(missingstart)+"S"+cigar;
+        int missingend = qlen-1-m_qto-qstart;
+        if(missingend > 0)
+            cigar += to_string(missingend)+"S";
+    }
     
     return cigar;
+}
+
+string CCigar::BtopString(int qstart, int qlen, const  char* query, const  char* subject) const {
+    string btop;
+    query += m_qfrom;
+    subject += m_sfrom;
+    for(auto& element : m_elements) {
+        if(element.m_type == 'M') {
+            int match_len = 0;
+            for(int l = 0; l < element.m_len; ++l) {
+                if(*query == *subject) {
+                    ++match_len;
+                } else {
+                    if(match_len > 0) {
+                        btop  += to_string(match_len);
+                        match_len = 0;
+                    }
+                    btop += *query;
+                    btop += *subject;
+                }
+                ++query;
+                ++subject;
+            }
+            if(match_len > 0)
+                btop  += to_string(match_len);
+        } else if(element.m_type == 'D') {
+            for(int l = 0; l < element.m_len; ++l) {
+                btop += '-';
+                btop += *subject++;
+            }
+        } else {
+            for(int l = 0; l < element.m_len; ++l) {
+                btop += *query++;
+                btop += '-';
+            }
+        }
+    }
+
+    return btop;
 }
 
 TCharAlign CCigar::ToAlign(const  char* query, const  char* subject) const {
@@ -291,6 +332,7 @@ public:
     CScore() : m_score(0) {}
     CScore(int32_t score, int32_t breaker) : m_score((int64_t(score) << 32) + breaker) {}
     bool operator>(const CScore& other) const { return m_score > other.m_score; }
+    bool operator>=(const CScore& other) const { return m_score >= other.m_score; }
     CScore  operator+(const CScore& other) const { 
         return CScore(m_score+other.m_score); 
     }
@@ -386,14 +428,14 @@ CCigar GlbAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
 			}
 			 
 			if(gapa > gapbj) {
-				if(ss > gapa) {
+				if(ss >= gapa) {
 					*(++sp) = ss;
 				} else {
 					*(++sp) = gapa;
 					*m |= Agap;
 				}
 			} else {
-				if(ss > gapbj) {
+				if(ss >= gapbj) {
 					*(++sp) = ss;
 				} else {
 					*(++sp) = gapbj;
@@ -459,7 +501,7 @@ CCigar LclAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
 			}
 			 
 			if(gapa > gapbj) {
-				if(ss > gapa) {
+				if(ss >= gapa) {
 					*(++sp) = ss;
                     if(ss > max_score) {
                         max_score = ss;
@@ -470,7 +512,7 @@ CCigar LclAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
 					*m |= Agap;
 				}
 			} else {
-				if(ss > gapbj) {
+				if(ss >= gapbj) {
 					*(++sp) = ss;
                     if(ss > max_score) {
                         max_score = ss;
@@ -563,7 +605,7 @@ CCigar LclAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
 			}
 			 
 			if(gapa > gapbj) {
-				if(ss > gapa) {
+				if(ss >= gapa) {
 					*(++sp) = ss;
                     if(ss > max_score) {
                         max_score = ss;
@@ -574,7 +616,7 @@ CCigar LclAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
 					*m |= Agap;
 				}
 			} else {
-				if(ss > gapbj) {
+				if(ss >= gapbj) {
 					*(++sp) = ss;
                     if(ss > max_score) {
                         max_score = ss;
@@ -664,7 +706,7 @@ CCigar VariBandAlign(const  char* a, int na, const  char*  b, int nb, int rho, i
 			}
 			 
 			if(gapa > gapbj) {
-				if(ss > gapa) {
+				if(ss >= gapa) {
 					*(++sp) = ss;
                     if(ss > max_score) {
                         max_score = ss;
@@ -675,7 +717,7 @@ CCigar VariBandAlign(const  char* a, int na, const  char*  b, int nb, int rho, i
 					*m |= Agap;
 				}
 			} else {
-				if(ss > gapbj) {
+				if(ss >= gapbj) {
 					*(++sp) = ss;
                     if(ss > max_score) {
                         max_score = ss;
@@ -781,7 +823,7 @@ CCigar BandAlign(const  char* a, int na, const  char*  b, int nb, int rho, int s
 			}
 			 
 			if(gapa > gapbj) {
-				if(ss > gapa) {
+				if(ss >= gapa) {
 					*(++sp) = ss;
                     if(ss > max_score) {
                         max_score = ss;
@@ -792,7 +834,7 @@ CCigar BandAlign(const  char* a, int na, const  char*  b, int nb, int rho, int s
 					*m |= Agap;
 				}
 			} else {
-				if(ss > gapbj) {
+				if(ss >= gapbj) {
 					*(++sp) = ss;
                     if(ss > max_score) {
                         max_score = ss;

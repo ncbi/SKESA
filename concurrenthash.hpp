@@ -360,14 +360,227 @@ namespace DeBruijn {
         vector<vector<E>> m_data;
     };
 
-
     // BucketBlock <= 32
     // Moderate value of BucketBlock will improve memory cache use
     // Larger values will reduce the number of entries in the spillover lists but eventually will increase the search time
     // 0 (all entries in the lists) is permitted and could be used for reduction of the table size for large sizeof(V)
+    template<class Key, class V, int BucketBlock>
+    struct SHashBlock {
+        static_assert(BucketBlock <= 32, "");
+        typedef Key large_t;
+        typedef V mapped_t;
+        typedef pair<large_t,V> element_t;
+        typedef CForwardList<element_t> list_t;
+        typedef typename list_t::SNode snode_t;
+        enum States : uint64_t {eAssigned = 1, eKeyExists = 2};
+        enum { eBucketBlock = BucketBlock };
+        SHashBlock() : m_status(0) {}
+        SHashBlock(const SHashBlock& other) : m_data(other.m_data), m_extra(other.m_extra), m_status(other.m_status.load()) {} // used for table initialisation only
+        SHashBlock& operator=(const SHashBlock& other) {
+            m_data = other.m_data;
+            m_extra = other.m_extra;
+            m_status.store(other.m_status.load());
+            return *this;
+        }
+            
+        pair<int, typename list_t::SNode*> Find(const large_t& k, int hint) {
+            if(BucketBlock > 0) {
+                //try exact position first
+                if(isEmpty(hint)) {
+                    return make_pair(BucketBlock+1, nullptr);
+                } else {
+                    Wait(hint);
+                    if(m_data[hint].first == k)
+                        return make_pair(hint, nullptr);
+                }
+
+                //scan array        
+                for(int shift = 0; shift < BucketBlock; ++shift) {
+                    if(shift != hint) {
+                        if(isEmpty(shift)) {
+                            return make_pair(BucketBlock+1, nullptr);
+                        } else {
+                            Wait(shift);
+                            if(m_data[shift].first == k)
+                                return make_pair(shift, nullptr);
+                        }
+                    }
+                }       
+            }
+
+            //scan spillover list   
+            for(auto it = m_extra.begin(); it != m_extra.end(); ++it) {
+                auto& cell = *it;
+                if(cell.first == k)
+                    return make_pair(BucketBlock, it.NodePointer());
+            }            
+            return make_pair(BucketBlock+1, nullptr);            
+        }
+
+        // 1. Try to put to exact position prescribed by hash   
+        // 2. Put in the lowest available array element 
+        // 3. Put in the spillover list 
+        mapped_t* FindOrInsert(const large_t& k, int hint) {
+            auto TryCell = [&](int shift) {
+                auto& cell = m_data[shift];
+                //try to grab   
+                if(Lock(shift, k))
+                    return &cell.second;
+                
+                //already assigned to some kmer 
+                //wait if kmer is not stored yet    
+                Wait(shift);
+               
+                if(cell.first == k) // kmer matches 
+                    return &cell.second; 
+                else
+                    return (mapped_t*)nullptr; // other kmer        
+            };
+
+            if(BucketBlock > 0) {
+                //try exact position first  
+                auto rslt = TryCell(hint);
+                if(rslt != nullptr)
+                    return rslt;            
+
+                //scan remaining array      
+                for(int shift = 0; shift < BucketBlock; ++shift) {
+                    if(shift != hint) {
+                        auto rslt = TryCell(shift);
+                        if(rslt != nullptr)
+                            return rslt;
+                    }
+                }
+            }
+
+            //scan spillover list       
+            auto existing_head = m_extra.Head();
+            for(auto p = existing_head; p != nullptr; p = p->m_next) {
+                if(p->m_data.first == k)
+                    return &(p->m_data.second); 
+            }
+
+            typename list_t::SNode* nodep = new typename list_t::SNode;
+            nodep->m_data.first = k;
+            nodep->m_next = existing_head;
+            while(!m_extra.TryPushFront(nodep)) {
+                //check if a new elemet matches     
+                for(auto p = nodep->m_next; p != existing_head; p = p->m_next) {
+                    if(p->m_data.first == k) {
+                        delete nodep;
+                        return &(p->m_data.second); 
+                    }
+                }
+                existing_head = nodep->m_next;
+            }                
+
+            return &(nodep->m_data.second);
+        }
+
+        element_t* IndexGet(int shift, void* lstp) {
+            if(shift < BucketBlock) {    // array element   
+                return &m_data[shift];
+            } else {                     //list element 
+                snode_t* ptr = reinterpret_cast<snode_t*>(lstp);
+                return &(ptr->m_data);  
+            }              
+        }
+
+        bool Lock(int shift, const large_t& kmer) {
+            uint64_t assigned = eAssigned << 2*shift;
+            uint64_t expected = m_status;
+
+            do { if(expected&assigned) return false; } 
+            while(!m_status.compare_exchange_strong(expected, expected|assigned));
+
+            m_data[shift].first = kmer;
+            m_status |= eKeyExists << 2*shift;
+            return true;
+        }
+        void Wait(int shift) { 
+            uint64_t keyexists = eKeyExists << 2*shift;
+            while(!(m_status&keyexists)); 
+        }
+        bool isEmpty(int shift) const { 
+            uint64_t assigned = eAssigned << 2*shift;
+            return (!(m_status&assigned)); 
+        }
+
+        void Move(element_t& cell, int to) {
+            m_data[to] = cell;
+            m_status |= (eAssigned|eKeyExists) << 2*to;
+            cell.second = V();
+        }
+        void Move(int from, int to) {
+            Move(m_data[from], to);
+            m_status &= ~((eAssigned|eKeyExists) << 2*from); // clear bits  
+        }
+        void Clear(int shift) {
+            m_data[shift].second = V();
+            m_status &= ~((uint64_t)(eAssigned|eKeyExists) << 2*shift); // clear bits   
+        }
+
+        //assumes that cel is not assigned; not mutithread safe
+        mapped_t* InitCell(const large_t& kmer, int shift) { 
+            if(shift < BucketBlock) {
+                m_status |= (eAssigned|eKeyExists) << 2*shift;
+                m_data[shift].first = kmer;
+                return &(m_data[shift].second);
+            }
+
+            auto nodep = m_extra.NewNode();
+            nodep->m_data.first = kmer;
+            return &(nodep->m_data.second);
+        }      
+
+        array<element_t, BucketBlock> m_data;
+        list_t m_extra;
+        atomic<uint64_t> m_status;
+    };
+
+    //TODO needs testing
+    template<typename Key, class MappedV, int BucketBlock, class Hash = std::hash<Key>>
+    class CHashMap {
+    public:
+        CHashMap(size_t size) {
+            size_t blocks = size/max(1,BucketBlock);
+            if(size%max(1,BucketBlock))
+                ++blocks;
+            m_table_size = max(1,BucketBlock)*blocks;
+            m_hash_table.Reset(blocks,1);
+        }
+        MappedV* Find(const Key& k) { 
+            if(m_table_size == 0) {
+                return nullptr;
+            } else {
+                size_t pos = Hash()(k)%m_table_size;
+                auto& bucket = m_hash_table[pos/max(1,BucketBlock)];
+                int hint = pos%max(1,BucketBlock);               
+
+                auto rslt = bucket.Find(k, hint);
+                if(rslt.first < BucketBlock)                 // found in array  
+                    return &bucket.m_data[rslt.first].second;
+                else if(rslt.first == BucketBlock)           // found in list   
+                    return &rslt.second->m_data.second;
+                else                                         // not found   
+                    return nullptr; 
+            }
+        } 
+        MappedV* FindOrInsert(const Key& k) {
+            size_t index = Hash()(k)%m_table_size;
+            size_t bucket_num = index/max(1,BucketBlock);
+            int hint = index%max(1,BucketBlock);               
+            return m_hash_table[bucket_num].FindOrInsert(k, hint);
+        }
+        size_t TableSize() const { return m_table_size; }
+
+    private:
+        CDeque<SHashBlock<Key, MappedV, BucketBlock>> m_hash_table;
+        size_t m_table_size;
+    };
+
     template <typename MappedV, int BucketBlock> 
     class CKmerHashMap {
-        static_assert(BucketBlock <= 32, "");
     public:
         CKmerHashMap(int kmer_len = 0, size_t size = 0) : m_kmer_len(kmer_len) {
             if(m_kmer_len > 0)
@@ -425,6 +638,7 @@ namespace DeBruijn {
             pair<TKmer, MappedV*> GetElement() { return Index::GetElement(*hashp); }
             MappedV* GetMapped() { return Index::GetMapped(*hashp); }
             const uint64_t* GetKeyPointer() { return Index::GetKeyPointer(*hashp); }
+            size_t HashPosition() const { return Index::m_index; }
         private:
             CKmerHashMap* hashp;
         };
@@ -471,6 +685,8 @@ namespace DeBruijn {
         }
         MappedV* FindOrInsertInBucket(const TKmer& kmer, size_t index) {return apply_visitor(find_or_insert(kmer,index), m_hash_table); }
 
+        MappedV* InitCell(const TKmer& kmer, size_t index) { return apply_visitor(init_cell(kmer,index), m_hash_table); }        
+
         void Swap(CKmerHashMap& other) {            
             apply_visitor(swap_with_other(), m_hash_table, other.m_hash_table);  
             swap(m_table_size, other.m_table_size);
@@ -501,168 +717,7 @@ namespace DeBruijn {
     protected:
         friend class Index;
         
-        template<int N, class V>
-        struct SHashBlock {
-            typedef LargeInt<N> large_t;
-            typedef V mapped_t;
-            typedef pair<large_t,V> element_t;
-            typedef CForwardList<element_t> list_t;
-            typedef typename list_t::SNode snode_t;
-            enum States : uint64_t {eAssigned = 1, eKeyExists = 2};
-            enum { eBucketBlock = BucketBlock };
-            SHashBlock() : m_status(0) {}
-            SHashBlock(const SHashBlock& other) : m_data(other.m_data), m_extra(other.m_extra), m_status(other.m_status.load()) {} // used for table initialisation only
-            SHashBlock& operator=(const SHashBlock& other) {
-                m_data = other.m_data;
-                m_extra = other.m_extra;
-                m_status.store(other.m_status.load());
-                return *this;
-            }
-            
-            pair<int, typename list_t::SNode*> Find(const large_t& k, int hint) {
-                if(BucketBlock > 0) {
-                    //try exact position first
-                    if(isEmpty(hint)) {
-                        return make_pair(BucketBlock+1, nullptr);
-                    } else {
-                        Wait(hint);
-                        if(m_data[hint].first == k)
-                            return make_pair(hint, nullptr);
-                    }
-
-                    //scan array    
-                    for(int shift = 0; shift < BucketBlock; ++shift) {
-                        if(shift != hint) {
-                            if(isEmpty(shift)) {
-                                return make_pair(BucketBlock+1, nullptr);
-                            } else {
-                                Wait(shift);
-                                if(m_data[shift].first == k)
-                                    return make_pair(shift, nullptr);
-                            }
-                        }
-                    }       
-                }
-
-                //scan spillover list
-                for(auto it = m_extra.begin(); it != m_extra.end(); ++it) {
-                    auto& cell = *it;
-                    if(cell.first == k)
-                        return make_pair(BucketBlock, it.NodePointer());
-                }
-
-                return make_pair(BucketBlock+1, nullptr);            
-            }
-
-            // 1. Try to put to exact position prescribed by hash
-            // 2. Put in the lowest available array element
-            // 3. Put in the spillover list
-            mapped_t* FindOrInsert(const large_t& k, int hint) {
-                auto TryCell = [&](int shift) {
-                    auto& cell = m_data[shift];
-                    //try to grab
-                    if(Lock(shift, k))
-                        return &cell.second;
-                
-                    //already assigned to some kmer
-                    //wait if kmer is not stored yet
-                    Wait(shift);
-               
-                    if(cell.first == k) // kmer matches
-                        return &cell.second; 
-                    else
-                        return (mapped_t*)nullptr; // other kmer    
-                };
-
-                if(BucketBlock > 0) {
-                    //try exact position first 
-                    auto rslt = TryCell(hint);
-                    if(rslt != nullptr)
-                        return rslt;            
-
-                    //scan remaining array  
-                    for(int shift = 0; shift < BucketBlock; ++shift) {
-                        if(shift != hint) {
-                            auto rslt = TryCell(shift);
-                            if(rslt != nullptr)
-                                return rslt;
-                        }
-                    }
-                }
-
-                //scan spillover list   
-                auto existing_head = m_extra.Head();
-                for(auto p = existing_head; p != nullptr; p = p->m_next) {
-                    if(p->m_data.first == k)
-                        return &(p->m_data.second); 
-                }
-
-                typename list_t::SNode* nodep = new typename list_t::SNode;
-                nodep->m_data.first = k;
-                nodep->m_next = existing_head;
-                while(!m_extra.TryPushFront(nodep)) {
-                    //check if a new elemet matches 
-                    for(auto p = nodep->m_next; p != existing_head; p = p->m_next) {
-                        if(p->m_data.first == k) {
-                            delete nodep;
-                            return &(p->m_data.second); 
-                        }
-                    }
-                    existing_head = nodep->m_next;
-                }                
-
-                return &(nodep->m_data.second);
-            }
-
-            element_t* IndexGet(int shift, void* lstp) {
-                if(shift < BucketBlock) {    // array element
-                    return &m_data[shift];
-                } else {                     //list element
-                    snode_t* ptr = reinterpret_cast<snode_t*>(lstp);
-                    return &(ptr->m_data);  
-                }              
-            }
-
-            bool Lock(int shift, const large_t& kmer) {
-                uint64_t assigned = eAssigned << 2*shift;
-                uint64_t expected = m_status;
-
-                do { if(expected&assigned) return false; } 
-                while(!m_status.compare_exchange_strong(expected, expected|assigned));
-
-                m_data[shift].first = kmer;
-                m_status |= eKeyExists << 2*shift;
-                return true;
-            }
-            void Wait(int shift) { 
-                uint64_t keyexists = eKeyExists << 2*shift;
-                while(!(m_status&keyexists)); 
-            }
-            bool isEmpty(int shift) const { 
-                uint64_t assigned = eAssigned << 2*shift;
-                return (!(m_status&assigned)); 
-            }
-
-            void Move(element_t& cell, int to) {
-                m_data[to] = cell;
-                m_status |= (eAssigned|eKeyExists) << 2*to;
-                cell.second = V();
-            }
-            void Move(int from, int to) {
-                Move(m_data[from], to);
-                m_status &= ~((eAssigned|eKeyExists) << 2*from); // clear bits
-            }
-            void Clear(int shift) {
-                m_data[shift].second = V();
-                m_status &= ~((uint64_t)(eAssigned|eKeyExists) << 2*shift); // clear bits
-            }
-
-            array<element_t, BucketBlock> m_data;
-            list_t m_extra;
-            atomic<uint64_t> m_status;
-        };
-
-        template<int N, class V> using THashBlockVec = CDeque<SHashBlock<N,V>>;
+        template<int N, class V> using THashBlockVec = CDeque<SHashBlock<LargeInt<N>,V,BucketBlock>>;
         template<class V> using TKmerHashTable = BoostVariant<THashBlockVec,V>;
 
         struct save : public boost::static_visitor<void> {
@@ -858,6 +913,20 @@ namespace DeBruijn {
             const TKmer& kmer;
             size_t index;
         };
+
+        struct init_cell : public boost::static_visitor<MappedV*> {
+            init_cell(const TKmer& k, size_t i) : kmer(k), index(i) {}
+            template <typename T> MappedV* operator()(T& v) const {
+                typedef typename T::value_type::large_t large_t;
+                const large_t& k = kmer.get<large_t>();
+                size_t bucket_num = index/(BucketBlock+1);
+                int shift = index%(BucketBlock+1);
+                return v[bucket_num].InitCell(k, shift);
+            }
+            const TKmer& kmer;
+            size_t index;
+        };
+
 
         struct info : public boost::static_visitor<> {
             template <typename T> void operator()(T& v) const {
@@ -1123,7 +1192,7 @@ namespace DeBruijn {
                 while(true) {
                     timer.Restart();
                     int counter_bit_size = 2;
-                    for( ; counter_bit_size <= 8 &&  (1 << counter_bit_size)-1 < m_min_count; counter_bit_size *= 2);
+                    for( ; counter_bit_size < 8 &&  (1 << counter_bit_size)-1 < m_min_count; counter_bit_size *= 2);
                     double false_positive_rate = 0.03;
                     //                    size_t bloom_table_size = -1.5*(double)m_estimated_uniq_kmers.load()*log(false_positive_rate)/log(2.)/log(2.); // 50% extra because blocked
                     size_t bloom_table_size = -(double)m_estimated_uniq_kmers.load()*log(false_positive_rate)/log(2.)/log(2.); // 50% extra because blocked

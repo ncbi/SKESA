@@ -72,13 +72,12 @@ namespace DeBruijn {
         using GraphDigger = CDBGraphDigger<DBGraph>;        
         
         template<typename... GraphArgs>
-        CDBGAssembler(double fraction, int jump, int low_count, int steps, int min_count, int min_kmer, bool forcesinglereads,
+        CDBGAssembler(double fraction, int jump, int low_count, int steps, int min_count, int min_kmer, int max_kmer, bool forcesinglereads,
                       int max_kmer_paired, int maxkmercount, int ncores, list<array<CReadHolder,2>>& raw_reads, TStrList seeds, 
                       bool allow_snps, bool estimate_min_count, GraphArgs... gargs) : 
-            m_fraction(fraction), m_jump(jump), m_low_count(low_count), m_steps(steps), m_min_count(min_count), m_min_kmer(min_kmer),
+            m_fraction(fraction), m_jump(jump), m_low_count(low_count), m_steps(steps), m_min_count(min_count), m_min_kmer(min_kmer), m_max_kmer(max_kmer),
             m_max_kmer_paired(max_kmer_paired), m_maxkmercount(maxkmercount), m_ncores(ncores), m_average_count(0), m_raw_reads(raw_reads) {
 
-            m_max_kmer = m_min_kmer;
             m_insert_size = 0;
 
             for(auto& reads : m_raw_reads) {
@@ -134,13 +133,6 @@ namespace DeBruijn {
                             }
                         }
                     }
-                    /*TODO do we need to restore this?
-                    for(auto& contig :  m_contigs.back()) {
-                        int replen = contig.LenMax()-1;
-                        contig.m_left_repeat = replen;
-                        contig.m_right_repeat = replen;
-                    }
-                    */
                     CombineSimilarContigs(m_contigs.back());
                     m_seeds = m_contigs.back();
 
@@ -192,11 +184,16 @@ namespace DeBruijn {
             }
 
             //estimate max_kmer
-            if(m_steps > 1 && average_count > m_maxkmercount) {
-                m_max_kmer = read_len+1-double(m_maxkmercount)/average_count*(read_len-min_kmer+1);
-                m_max_kmer = min(TKmer::MaxKmer(), m_max_kmer);
-                EstimateMaxKmer(read_len, gargs...);
+            if(m_max_kmer == 0) {
+                if(m_steps > 1 && average_count > m_maxkmercount) {
+                    m_max_kmer = read_len+1-double(m_maxkmercount)/average_count*(read_len-min_kmer+1);
+                    m_max_kmer = min(TKmer::MaxKmer(), m_max_kmer);
+                    EstimateMaxKmer(read_len, gargs...);
+                } else {
+                    m_max_kmer = m_min_kmer;
+                }
             }
+
             cerr << endl << "Average count: " << average_count << " Max kmer: " << m_max_kmer << endl;
             
             //estimate insert size
@@ -268,6 +265,8 @@ namespace DeBruijn {
                     for(int step = 1; step < m_steps; ++step) {
                         int kmer_len = min_kmer+step*alpha+0.5;             // round to integer
                         kmer_len -= 1-kmer_len%2;                           // get odd kmer
+                        if(kmer_len <= m_graphs.rbegin()->first)
+                            continue;
                         if(GetGraph(kmer_len, m_raw_reads, true, 0, gargs...) == 0) {
                             cerr << "Empty graph for kmer length: " << kmer_len << " skipping this and longer kmers" << endl;
                             break;
@@ -310,7 +309,6 @@ namespace DeBruijn {
         map<int,DBGraph*>& Graphs() { return m_graphs; }
         TContigSequenceList& Contigs() { return m_contigs.back(); }
         vector<TContigSequenceList>& AllIterations() { return m_contigs; }
-        TContigSequenceList& ShortContigs() { return m_short_contigs; };
         CReadHolder ConnectedReads() const {
             CReadHolder connected_reads(false);
             for(const auto& cr : m_connected_reads) {
@@ -551,6 +549,9 @@ namespace DeBruijn {
 
             {
                 CReadHolder cleaned_reads(true);
+                if(raw_reads[0].ReadNum() > 0)
+                    cleaned_reads.Reserve(raw_reads[0].TotalSeq(), raw_reads[0].ReadNum());
+
                 CReadHolder::string_iterator is1 = raw_reads[0].sbegin();
                 CReadHolder::string_iterator is2 = raw_reads[0].sbegin();
                 ++is2;
@@ -622,6 +623,8 @@ namespace DeBruijn {
 
             if(!connected_reads) {          
                 CReadHolder cleaned_reads(false);
+                if(raw_reads[1].ReadNum() > 0)
+                    cleaned_reads.Reserve(raw_reads[1].TotalSeq(), raw_reads[1].ReadNum());
                 for(CReadHolder::string_iterator is = raw_reads[1].sbegin() ;is != raw_reads[1].send(); ++is) {
                     int rlen = is.ReadLen();
                     if(rlen < kmer_len)
@@ -722,7 +725,8 @@ namespace DeBruijn {
             timer.Restart();
             //convert strings to SContig and mark visited kmers 
             if(allow_snps)
-                graph.ClearAllVisited();                
+                graph.ClearAllVisited();  
+              
             TContigList<DBGraph> scontigs = ConverToSContigAndMarkVisited(graph_digger); 
             cerr << endl << "Mark used kmers in " << timer.Elapsed();
 
@@ -767,7 +771,7 @@ namespace DeBruijn {
             cerr << "New seeds in " << timer.Elapsed();
 
             timer.Restart();
-            graph_digger.ConnectAndExtendContigs(scontigs, m_ncores); 
+            graph_digger.ConnectAndExtendContigs(scontigs, m_ncores);             
 
             // convert back to CContigSequence 
             m_contigs.push_back(TContigSequenceList());
@@ -811,8 +815,7 @@ namespace DeBruijn {
                 if(!contig.m_circular) {
                     if(contig.size() > 1 && (int)contig.ChunkLenMax(0) < kmer_len) {
                         contig.m_left_repeat = 0;
-                        contig.pop_front();
-                        contig.pop_front();
+                        contig.erase(contig.begin(), contig.begin()+2);
                     }
                     if(contig.size() > 1 && (int)contig.ChunkLenMax(contig.size()-1) < kmer_len) {
                         contig.m_right_repeat = 0;
@@ -820,9 +823,6 @@ namespace DeBruijn {
                         contig.pop_back();
                     }
                 }
-
-                if((int)contig.LenMin() < kmer_len)
-                    m_short_contigs.push_back(contig);
             }
 
             TContigList<DBGraph> scontigs;
@@ -868,6 +868,10 @@ namespace DeBruijn {
                 mem_used += reads[0].MemoryFootprint()+reads[1].MemoryFootprint();
             for(auto& graph : m_graphs)
                 mem_used += graph.second->MemoryFootprint();
+            for(auto& lst : m_contigs) {
+                for(auto& contig : lst)
+                    mem_used += contig.MemoryFootprint()+2*sizeof(CContigSequence*);  // contig and 2 list pointers
+            }
 
             return mem_available-mem_used;
 
@@ -895,12 +899,12 @@ namespace DeBruijn {
         int m_steps;                                         // number of main steps
         int m_min_count;                                     // minimal kmer count to be included in a de Bruijn graph
         int m_min_kmer;                                      // the minimal kmer size for the main steps
+        int m_max_kmer;                                      // maximal kmer size for the main steps
         int m_max_kmer_paired;                               // insert size
         int m_insert_size;                                   // upper bound for the insert size
         int m_maxkmercount;                                  // the minimal average count for estimating the maximal kmer
         int m_ncores;                                        // number of threads
 
-        int m_max_kmer;                                      // maximal kmer size for the main steps
         double m_average_count;                              // average count for minimal kmers
 
         list<array<CReadHolder,2>>& m_raw_reads;             // original reads - will be reduced gradually
@@ -908,7 +912,6 @@ namespace DeBruijn {
         list<array<CReadHolder,2>> m_connected_reads;        // connected pairs (long reads)
         map<int, DBGraph*> m_graphs;                         // De Bruijn graphs for mutiple kmers
         vector<TContigSequenceList> m_contigs;               // assembled contigs for each iteration
-        TContigSequenceList m_short_contigs;
         TContigSequenceList m_seeds;
     };
 
@@ -1004,7 +1007,7 @@ namespace DeBruijn {
             TBins bins = kmer_counter.Kmers().GetBins();
             int genome_size = CalculateGenomeSize(bins);
             if(genome_size > 0) {
-                int new_min_count = total_seq/genome_size/50+0.5;
+                int new_min_count = min(255.,total_seq/genome_size/50+0.5);
                 if(new_min_count > m_min_count) {
                     int new_maxkmercount = max(10, int(total_seq/genome_size/10+0.5));
                     cerr << "WARNING: --min_count changed from " << m_min_count << " to " << new_min_count << " because of high coverage for genome size " << genome_size << endl;

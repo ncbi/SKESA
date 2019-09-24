@@ -565,6 +565,7 @@ public:
         return result;
     }
     u_int64_t* getPointer() { return value; }
+    const u_int64_t* getPointer() const { return value; }
 
 private:
     template<int T>  friend LargeInt<T> revcomp (const LargeInt<T>& i, size_t sizeKmer);

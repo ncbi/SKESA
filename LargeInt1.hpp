@@ -77,9 +77,6 @@ public:
 
     static const size_t getSize ()  { return 8*sizeof(u_int64_t); }
 
-    /** Returns lower 64 bits */
-    u_int64_t toInt () const  {  return value[0];  }
-
     LargeInt<1> operator+  (const LargeInt<1>& other)   const   {  return value[0] + other.value[0];  }
     LargeInt<1> operator-  (const LargeInt<1>& other)   const   {  return value[0] - other.value[0];  }
     LargeInt<1> operator|  (const LargeInt<1>& other)   const   {  return value[0] | other.value[0];  }
@@ -163,6 +160,7 @@ public:
         return res;
     }
     u_int64_t* getPointer() { return value; }
+    const u_int64_t* getPointer() const { return value; }
 
 private:
     friend LargeInt<1> revcomp (const LargeInt<1>& i,   size_t sizeKmer);

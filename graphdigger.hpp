@@ -91,7 +91,7 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
     mutex out_mutex;
 
 
-    typedef deque<char> TVariation;
+    typedef vector<char> TVariation;
     struct SeqInterval {
         SeqInterval(TVariation::iterator b, TVariation::iterator e) : begin(b), end(e) {}
         bool operator<(const SeqInterval& other) const { return lexicographical_compare(begin, end, other.begin, other.end); }
@@ -101,12 +101,20 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
         TVariation::iterator end;
     };
     typedef forward_list<TVariation> TLocalVariants;
-    class CContigSequence : public deque<TLocalVariants> {
+    class CContigSequence : public vector<TLocalVariants> {
     public:
         int m_left_repeat = 0;     // number of bases which COULD be in repeat
         int m_right_repeat = 0;    // number of bases which COULD be in repeat 
         bool m_circular = false;
 
+        size_t MemoryFootprint() const {
+            size_t total = sizeof(CContigSequence)+sizeof(TLocalVariants)*capacity();
+            for(auto& lst : *this) {
+                for(auto& v : lst)
+                    total += sizeof(TVariation)+sizeof(TVariation*)+v.capacity();
+            }
+            return total;
+        }
         int VariantsNumber(int chunk) { return distance((*this)[chunk].begin(), (*this)[chunk].end()); }
         bool UniqueChunk(int chunk) const {
             auto it = (*this)[chunk].begin();
@@ -183,6 +191,7 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                                 seq.insert(seq.end(), var2.begin(), var2.end());
                             }
                         }
+                        //erase i-1, i, i+1
                         erase(begin()+i-1, begin()+i+2);
                     } else {
                         i += 2;
@@ -193,12 +202,12 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
             if(m_circular && size() >= 5 && (int)(ChunkLenMax(0)+ChunkLenMax(size()-1)) < min_uniq_len) {
                 // rotate contig so that short interval is in the middle
                 ExtendTopVariant(front().front().begin(), front().front().end()); // add first chunk to the last
-                pop_front();
-                push_back(front()); // move first variable chunk to end
-                pop_front();
+                erase(begin());
+                rotate(begin(), begin()+1, end()); // move first variable chunk to end
                 InsertNewChunk();
-                ExtendTopVariant(front().front()[0]); // move first base to the end
-                front().front().pop_front();
+                auto& seq = front().front();
+                ExtendTopVariant(seq[0]); // move first base to the end
+                seq.erase(seq.begin());
                 RemoveShortUniqIntervals(min_uniq_len);
                 return true;
             }
@@ -209,33 +218,44 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
             if(size() > 2) {
                 for(unsigned i = 1; i < size()-1; ++i) {
                     if(VariableChunk(i)) {
-                        bool all_same = true;
-                        while(all_same) {
+                        auto& fseq = (*this)[i].front();
+                        unsigned len = 0;
+                        while(true) {
+                            bool all_same = true;
                             for(auto& seq : (*this)[i]) {
-                                if(seq.empty() || seq.front() != (*this)[i].front().front()) {
+                                if(seq.size() == len || seq[len] != fseq[len]) {
                                     all_same = false;
                                     break;
                                 }
                             }
-                            if(all_same) {
-                                (*this)[i-1].front().push_back((*this)[i].front().front());
-                                for(auto& seq : (*this)[i])
-                                    seq.pop_front();
-                            }
+                            if(all_same)
+                                ++len;
+                            else
+                                break;
                         }
-                        all_same = true;
-                        while(all_same) {
+                        if(len > 0) {
+                            (*this)[i-1].front().insert((*this)[i-1].front().end(), fseq.begin(), fseq.begin()+len);
+                            for(auto& seq : (*this)[i])
+                                seq.erase(seq.begin(), seq.begin()+len);
+                        }
+                        len = 0;
+                        while(true) {
+                            bool all_same = true;
                             for(auto& seq : (*this)[i]) {
-                                if(seq.empty() || seq.back() != (*this)[i].front().back()) {
+                                if(seq.size() == len || *(seq.rbegin()+len) != *(fseq.rbegin()+len)) {
                                     all_same = false;
                                     break;
                                 }
                             }
-                            if(all_same) {
-                                (*this)[i+1].front().push_front((*this)[i].front().back());
-                                for(auto& seq : (*this)[i])
-                                    seq.pop_back();
-                            }
+                            if(all_same)
+                                ++len;
+                            else
+                                break;
+                        }
+                        if(len > 0) {
+                            (*this)[i+1].front().insert((*this)[i+1].front().begin(), fseq.end()-len, fseq.end());
+                            for(auto& seq : (*this)[i])
+                                seq.erase(seq.end()-len, seq.end());
                         }
                     }
                 }
@@ -294,31 +314,34 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
             return true;
         }
         
-        
         void IncludeRepeatsInVariableIntervals() {
             for(unsigned chunk = 1; chunk < size()-1; chunk += 2) {
                 int min_len = ChunkLenMin(chunk);
+                int len = 0;
                 for(int shift = 0; AllSameL(chunk, shift); ++shift) {
-                    if(shift >= min_len) {
-                        for(auto& seq : (*this)[chunk]) {
-                            seq.push_back((*this)[chunk+1].front().front());
-                        }
-                        (*this)[chunk+1].front().pop_front();
-                        ++min_len;
-                    }
+                    if(shift >= min_len)
+                        ++len;
                 }
-
+                if(len > 0) {
+                    min_len += len;
+                    auto& nseq = (*this)[chunk+1].front();
+                    for(auto& seq : (*this)[chunk])
+                        seq.insert(seq.end(), nseq.begin(), nseq.begin()+len);
+                    nseq.erase(nseq.begin(), nseq.begin()+len);
+                }
+                len = 0;
                 for(int shift = 0; AllSameR(chunk, shift); ++shift) {
-                    if(shift >= min_len) {
-                        for(auto& seq : (*this)[chunk]) {
-                            seq.push_front((*this)[chunk-1].front().back());
-                        }
-                        (*this)[chunk-1].front().pop_back();
-                    }
+                    if(shift >= min_len)
+                        ++len;
+                }
+                if(len > 0) {
+                    auto& pseq = (*this)[chunk-1].front();
+                    for(auto& seq : (*this)[chunk])
+                        seq.insert(seq.begin(), pseq.end()-len, pseq.end());
+                    pseq.erase(pseq.end()-len, pseq.end());
                 }
             }
-        }
-               
+        }               
     };
 
     typedef list<CContigSequence> TContigSequenceList;
@@ -813,7 +836,7 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                 int chunk_len = m_seq.ChunkLenMax(0);
                 clip -= chunk_len;
                 m_left_extend = max(0, m_left_extend-chunk_len);
-                m_seq.pop_front();
+                m_seq.erase(m_seq.begin());
             }
             if(clip > 0 && !m_seq.empty()) {
                 m_left_extend = max(0, m_left_extend-clip);
@@ -956,7 +979,7 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                 if(first_chunk > 0) {
                     auto& last_seq = m_seq.back().front();
                     last_seq.insert(last_seq.end(), m_seq.front().front().begin(), m_seq.front().front().end());
-                    m_seq.pop_front();
+                    m_seq.erase(m_seq.begin());
                     rotate(m_seq.begin(), m_seq.begin()+first_chunk-1, m_seq.end());
                 }
                 if(first_base > 0) {
@@ -1679,14 +1702,14 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
             return false;
         }
 
-        vector<Successor> GetReversibleNodeSuccessors(const Node& node, int* numbackp = nullptr) const {
+        vector<Successor> GetReversibleNodeSuccessors(const Node& node, int* numbackp = nullptr, bool check_extension = true) const {
             vector<Successor> neighbors = m_graph.GetNodeSuccessors(node);
-            FilterNeighbors(neighbors, true);
+            FilterNeighbors(neighbors, check_extension);
             if(numbackp != nullptr)
                 *numbackp = 0;
             for(auto& neighbor : neighbors) {
                 vector<Successor> step_back = m_graph.GetNodeSuccessors(m_graph.ReverseComplement(neighbor.m_node));
-                FilterNeighbors(step_back, true);
+                FilterNeighbors(step_back, check_extension);
                 bool found = false;
                 for(auto& back : step_back) {
                     if(back.m_node == m_graph.ReverseComplement(node)) {
@@ -1819,6 +1842,7 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
         }
 
         DBGraph& Graph() { return m_graph; }
+        double Fraction() const { return m_fraction; }
 
         enum EConnectionStatus {eSuccess, eNoConnection, eAmbiguousConnection};
 
@@ -2424,7 +2448,8 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                     int last_chunk = 0;
                     for(int len = contig.ChunkLenMin(last_chunk); len < contig.m_left_repeat+1; len += contig.ChunkLenMin(++last_chunk));
 
-                    vector<forward_list<Node>> kmers(contig.m_left_repeat+1-kmer_len+1);
+                    int check_len = contig.m_left_repeat+1;
+                    vector<forward_list<Node>> kmers(check_len-kmer_len+1);
 
                     stack<pair<TVariation*, int>> active_chunks;
                     active_chunks.emplace(&contig[0].front(), 0);
@@ -2442,10 +2467,13 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                             for(++it; it != contig[chunk].end(); ++it) 
                                 active_chunks.emplace(&(*it), chunk);
                         }
-                        TVariation seq;
-                        for(unsigned i = 0; i < current_seqs.size()-1; ++i)
-                            seq.insert(seq.end(), current_seqs[i]->begin(), current_seqs[i]->end());
-                        seq.insert(seq.end(), current_seqs.back()->begin(), current_seqs.back()->begin()+contig.m_left_repeat+1-seq.size());
+                        list<char> seq;
+                        int seq_len = 0;
+                        for(auto ics = current_seqs.begin(); seq_len < check_len; ++ics) {
+                            int extra = max(0, seq_len+(int)(*ics)->size()-check_len);
+                            seq.insert(seq.end(), (*ics)->begin(), (*ics)->end()-extra);
+                            seq_len += (*ics)->size()-extra;
+                        }                            
                         CReadHolder rh(false);
                         rh.PushBack(seq);
                         int pos = kmers.size()-1;
@@ -2497,7 +2525,8 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                     int first_chunk = contig.size()-1;
                     for(int len = contig.ChunkLenMin(first_chunk); len < contig.m_right_repeat+1; len += contig.ChunkLenMin(--first_chunk));
 
-                    vector<forward_list<Node>> kmers(contig.m_right_repeat+1-kmer_len+1);
+                    int check_len = contig.m_right_repeat+1;
+                    vector<forward_list<Node>> kmers(check_len-kmer_len+1);
 
                     stack<pair<TVariation*, int>> active_chunks;
                     active_chunks.emplace(&contig[contig.size()-1].front(), contig.size()-1);
@@ -2516,10 +2545,13 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                             for(++it; it != contig[chunk].end(); ++it) 
                                 active_chunks.emplace(&(*it), chunk);
                         }
-                        TVariation seq;
-                        for(unsigned i = current_seqs.size()-1; i > 0; --i)
-                            seq.insert(seq.begin(), current_seqs[i]->begin(), current_seqs[i]->end());
-                        seq.insert(seq.begin(), current_seqs.front()->end()-(contig.m_right_repeat+1-seq.size()), current_seqs.front()->end());
+                        list<char> seq;
+                        int seq_len = 0;
+                        for(auto ics = current_seqs.rbegin(); seq_len < check_len; ++ics) {
+                            int extra = max(0, seq_len+(int)(*ics)->size()-check_len);
+                            seq.insert(seq.begin(), (*ics)->begin()+extra, (*ics)->end());
+                            seq_len += (*ics)->size()-extra;
+                        }                            
                         CReadHolder rh(false);
                         rh.PushBack(seq);
                         int pos = kmers.size()-1;
@@ -2959,14 +2991,14 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
             }
 
             return color;
-        }        
-        
-    private:
+        } 
+       
         // Prepares one of the mates of a read pair for connection
         // Finds the longest stretch of the read which could be assembled from both ends and clips the rest
         // read - read input/output
         // nodes - kmers for the remaining part
-        void CheckAndClipRead(string& read, deque<Node>& nodes) {
+        // returns left and length for retained segment
+        pair<int,int> CheckAndClipRead(string& read, deque<Node>& nodes) {
             int kmer_len = m_graph.KmerLen();
 
             string lextend = MostLikelyExtension(DBGraph::ReverseComplement(m_graph.GetNode(read.substr(0, kmer_len))), kmer_len);        
@@ -3004,7 +3036,7 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
             }        
 
             int left = 0;             // first kmer position    
-            int len = 0;              // number of consecutive good kmers (the sequence is longer by kmer_len-1)    
+            int len = 0;              // number of consecutive good bases    
             for(unsigned k = 0; k < read.size(); ++k) {
                 for( ; k < read.size() && !bases[k]; ++k);         // skip bad bases    
                 int current_left = k;
@@ -3017,6 +3049,8 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
             }
 
             if(len < kmer_len) {
+                left = read.size();
+                len = 0;
                 read.clear();
                 nodes.clear();
             } else {
@@ -3024,7 +3058,11 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                 nodes.resize(len-kmer_len+1);
                 copy(extended_nodes.begin()+lextend.size()+left, extended_nodes.begin()+lextend.size()+left+len-kmer_len+1, nodes.begin());
             }
+
+            return make_pair(left, len);
         }    
+        
+    private:
 
         // one-thread worker for paired reads connection
         // saves reads which were unambiguously connected; extends the ends of ambiguously connected reads and

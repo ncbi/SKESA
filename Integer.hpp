@@ -96,7 +96,7 @@ public:
     IntegerTemplate() : v(LargeInt<MaxPrec>(0)) {}
 
     static int MaxKmer() { return 32*MaxPrec; }
-    
+
     IntegerTemplate(int kmer_len, uint64_t n) {
         int p = (kmer_len+31)/32;
         v = CreateVariant<TLargeIntN, LargeInt>(p);
@@ -108,16 +108,22 @@ public:
             *this = (*this) << 2;
             *this = *this + (std::find(bin2NT.begin(), bin2NT.end(), *i) - bin2NT.begin());
         }
-    }
+    }    
     IntegerTemplate(const std::string& kmer) : IntegerTemplate(kmer.begin(), kmer.end()) {}
 
-    //TODO remove duplication
     IntegerTemplate(std::deque<char>::const_iterator begin, std::deque<char>::const_iterator end) : IntegerTemplate(end-begin, 0)  {
         for(auto i = begin; i != end; ++i) {
             *this = (*this) << 2;
             *this = *this + (std::find(bin2NT.begin(), bin2NT.end(), *i) - bin2NT.begin());
         }
     }
+    IntegerTemplate(std::vector<char>::const_iterator begin, std::vector<char>::const_iterator end) : IntegerTemplate(end-begin, 0)  {
+        for(auto i = begin; i != end; ++i) {
+            *this = (*this) << 2;
+            *this = *this + (std::find(bin2NT.begin(), bin2NT.end(), *i) - bin2NT.begin());
+        }
+    }
+    
 
     /**Construct from a different size IntegerTemplate
        Will clip (or add) extra nucs on the LEFT of the string
@@ -309,6 +315,7 @@ public:
 
     /** Get pointer to the actual data **/
     uint64_t* getPointer() { return boost::apply_visitor (Pointer(), v); }
+    const uint64_t* getPointer() const { return boost::apply_visitor (PointerC(), v); }
 
     /** Get a hash value on 64 bits for a given IntegerTemplate object.
      * \return the hash value on 64 bits.
@@ -326,6 +333,8 @@ private:
 
     struct Pointer : public boost::static_visitor<uint64_t*>    {
         template<typename T>  uint64_t* operator() (T& a) const { return a.getPointer(); }};
+    struct PointerC : public boost::static_visitor<const uint64_t*>    {
+        template<typename T>  const uint64_t* operator() (T& a) const { return a.getPointer(); }};
 
     struct Integer_name : public boost::static_visitor<const char*>    {
         template<typename T>  const char* operator() (const T& a) const { return a.getName();  }};
@@ -427,6 +436,8 @@ private:
         Integer_toString (size_t c) : Visitor<std::string,size_t>(c) {}
         template<typename T>  std::string operator() (const T& a) const  { return a.toString(this->arg);  }};
 };
+
+
 
 /********************************************************************************/
 

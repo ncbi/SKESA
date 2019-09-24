@@ -46,10 +46,18 @@ LIBS = -Wl,-Bstatic $(BOOST_LIB) \
 %.o: %.cpp
 	$(CC) -c -o $@ $< $(CFLAGS)
 
-all: skesa 
+all: skesa gfa_connector kmercounter
 
-glb_align.o: glb_align.hpp Makefile.nongs
+glb_align.o: glb_align.hpp Makefile
 
-skesa.o: common_util.hpp concurrenthash.hpp readsgetter.hpp ngs_includes.hpp counter.hpp graphdigger.hpp assembler.hpp KmerInit.hpp DBGraph.hpp Integer.hpp LargeInt.hpp LargeInt1.hpp LargeInt2.hpp Model.hpp config.hpp Makefile.nongs
+skesa.o: common_util.hpp concurrenthash.hpp readsgetter.hpp ngs_includes.hpp counter.hpp graphdigger.hpp assembler.hpp KmerInit.hpp DBGraph.hpp Integer.hpp LargeInt.hpp LargeInt1.hpp LargeInt2.hpp Model.hpp config.hpp glb_align.hpp Makefile
 skesa: skesa.o glb_align.o
+	$(CC) -o $@ $^ $(LIBS)
+
+gfa_connector.o: gfa.hpp glb_align.hpp common_util.hpp concurrenthash.hpp readsgetter.hpp ngs_includes.hpp graphdigger.hpp KmerInit.hpp  DBGraph.hpp Integer.hpp LargeInt.hpp LargeInt1.hpp LargeInt2.hpp Model.hpp config.hpp Makefile
+gfa_connector: gfa_connector.o glb_align.o
+	$(CC) -o $@ $^ $(LIBS)
+
+kmercounter.o: common_util.hpp concurrenthash.hpp readsgetter.hpp ngs_includes.hpp counter.hpp graphdigger.hpp assembler.hpp KmerInit.hpp DBGraph.hpp Integer.hpp LargeInt.hpp LargeInt1.hpp LargeInt2.hpp Model.hpp config.hpp glb_align.hpp Makefile
+kmercounter: kmercounter.o glb_align.o
 	$(CC) -o $@ $^ $(LIBS)

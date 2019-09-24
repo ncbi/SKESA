@@ -39,10 +39,10 @@ VDB_LIB := -L $(VDB_PATH)/lib64
 NGS_INCL := -I $(NGS_PATH)/include
 NGS_LIB := -L $(NGS_PATH)/lib64
 
-CC = c++ -std=c++11
+CC = c++ -std=c++11 -fdiagnostics-color=never
 CFLAGS = -Wall -Wno-format-y2k  -pthread -fPIC -O3 -finline-functions -fstrict-aliasing \
          -fomit-frame-pointer -msse4.2 $(BOOST_INCL) $(NGS_INCL) $(VDB_INCL)
-         
+
 LIBS = $(VDB_LIB) -lncbi-ngs-c++-static -lncbi-vdb-static \
        $(NGS_LIB) -lngs-c++-static \
        -Wl,-Bstatic $(BOOST_LIB) \
@@ -57,13 +57,22 @@ LIBS = $(VDB_LIB) -lncbi-ngs-c++-static -lncbi-vdb-static \
 %.o: %.cpp
 	$(CC) -c -o $@ $< $(CFLAGS)
 
-all: skesa 
+all: skesa gfa_connector kmercounter
 
 glb_align.o: glb_align.hpp Makefile
 
-skesa.o: common_util.hpp concurrenthash.hpp readsgetter.hpp ngs_includes.hpp counter.hpp graphdigger.hpp assembler.hpp KmerInit.hpp DBGraph.hpp Integer.hpp LargeInt.hpp LargeInt1.hpp LargeInt2.hpp Model.hpp config.hpp Makefile $(NGS_DIR)/ngs.done
+skesa.o: common_util.hpp concurrenthash.hpp readsgetter.hpp ngs_includes.hpp counter.hpp graphdigger.hpp assembler.hpp KmerInit.hpp DBGraph.hpp Integer.hpp LargeInt.hpp LargeInt1.hpp LargeInt2.hpp Model.hpp config.hpp glb_align.hpp Makefile $(NGS_DIR)/ngs.done
 skesa: skesa.o glb_align.o
 	$(CC) -o $@ $^ $(LIBS)
+
+gfa_connector.o: gfa.hpp glb_align.hpp common_util.hpp concurrenthash.hpp readsgetter.hpp ngs_includes.hpp graphdigger.hpp KmerInit.hpp  DBGraph.hpp Integer.hpp LargeInt.hpp LargeInt1.hpp LargeInt2.hpp Model.hpp config.hpp Makefile $(NGS_DIR)/ngs.done
+gfa_connector: gfa_connector.o glb_align.o
+	$(CC) -o $@ $^ $(LIBS)
+
+kmercounter.o: common_util.hpp concurrenthash.hpp readsgetter.hpp ngs_includes.hpp counter.hpp graphdigger.hpp assembler.hpp KmerInit.hpp DBGraph.hpp Integer.hpp LargeInt.hpp LargeInt1.hpp LargeInt2.hpp Model.hpp config.hpp glb_align.hpp Makefile $(NGS_DIR)/ngs.done
+kmercounter: kmercounter.o glb_align.o
+	$(CC) -o $@ $^ $(LIBS)
+
 
 $(NGS_DIR)/ngs.done:
 	rm -fr $(NGS_DIR)

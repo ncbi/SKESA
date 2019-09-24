@@ -106,26 +106,27 @@ namespace DeBruijn {
     // 
     class CReadHolder {
     public:
-        CReadHolder(bool contains_paired) :  m_total_seq(0), m_front_shift(0), m_contains_paired(contains_paired) {};
+        CReadHolder(bool contains_paired) :  m_total_seq(0), m_contains_paired(contains_paired) {};
 
         // inserts read at the end
-        //        void PushBack(const string& read) {
         template <typename Container>
         void PushBack(const Container& read) {
-            int shift = (m_total_seq*2 + m_front_shift)%64;
-            for(int i = (int)read.size()-1; i >= 0; --i) {  // put backward for kmer compatibility
+            int shift = (m_total_seq*2)%64;
+            int read_len = 0;
+            for(auto it = read.rbegin(); it != read.rend(); ++it) {   // put backward for kmer compatibility
                 if(shift == 0)
                     m_storage.push_back(0);
-                m_storage.back() += ((find(bin2NT.begin(), bin2NT.end(),  read[i]) - bin2NT.begin()) << shift);
+                m_storage.back() += ((find(bin2NT.begin(), bin2NT.end(),  *it) - bin2NT.begin()) << shift);
                 shift = (shift+2)%64;
+                ++read_len;
             }
-            m_read_length.push_back(read.size());
-            m_total_seq += read.size();
+            m_read_length.push_back(read_len);
+            m_total_seq += read_len;
         }
 
         template <typename RandomIterator>
         void PushBack(RandomIterator begin, uint32_t len) {
-            int shift = (m_total_seq*2 + m_front_shift)%64;
+            int shift = (m_total_seq*2)%64;
             for(RandomIterator it = begin+len-1; ; --it) {
                 if(shift == 0)
                     m_storage.push_back(0);
@@ -144,28 +145,14 @@ namespace DeBruijn {
         void PushBack(const string_iterator& is) {
             size_t read_len = is.ReadLen();
             m_read_length.push_back(read_len);
-            size_t destination_first_bit = m_front_shift+2*m_total_seq;
+            size_t destination_first_bit = 2*m_total_seq;
             m_total_seq += read_len;
-            m_storage.resize((m_front_shift+2*m_total_seq+63)/64);
+            m_storage.resize((2*m_total_seq+63)/64);
 
             const CReadHolder& other_holder = *is.m_readholderp;
-            size_t bit_from = is.m_readholderp->m_front_shift+is.m_position;
+            size_t bit_from = is.m_position;
             size_t bit_to = bit_from+2*read_len;
             other_holder.CopyBits(bit_from, bit_to, m_storage, destination_first_bit, m_storage.size());
-        }
-
-        // removes first sequence
-        void PopFront() {
-            m_total_seq -= m_read_length.front();
-            if(m_total_seq == 0) {
-                Clear();
-            } else {
-                int nextp = m_front_shift+2*m_read_length.front();
-                m_read_length.pop_front();
-                m_front_shift = nextp%64;
-                for(int num = nextp/64; num > 0; --num)
-                    m_storage.pop_front();
-            }
         }
 
         // swaps contents with other
@@ -173,7 +160,6 @@ namespace DeBruijn {
             swap(m_storage, other.m_storage);
             swap(m_read_length, other.m_read_length);
             swap(m_total_seq, other.m_total_seq);
-            swap(m_front_shift, other. m_front_shift);
         }
 
         // deletes all sequences and releases  memory
@@ -205,7 +191,12 @@ namespace DeBruijn {
         // total number of sequences
         size_t ReadNum() const { return m_read_length.size(); }
 
-        size_t MemoryFootprint() const { return 8*m_storage.size()+4*m_read_length.size(); }  // memory in bytes
+        size_t MemoryFootprint() const { return 8*m_storage.capacity()+4*m_read_length.capacity(); }  // memory in bytes
+        void Reserve(size_t seq, size_t num = 0) {
+            m_storage.reserve(seq/32+1);
+            if(num > 0)
+                m_read_length.reserve(num);
+        }
 
         // shortest sequence length at xx% of total length
         size_t NXX(double xx) const {
@@ -235,7 +226,7 @@ namespace DeBruijn {
             TKmer operator*() const {
                 TKmer kmer(m_kmer_len, 0);
                 uint64_t* guts = kmer.getPointer();
-                size_t bit_from = m_readholderp->m_front_shift+m_position;
+                size_t bit_from = m_position;
                 size_t bit_to = bit_from+2*m_kmer_len;
                 m_readholderp->CopyBits(bit_from, bit_to, guts, 0, (2*m_kmer_len+63)/64);
                 
@@ -300,7 +291,7 @@ namespace DeBruijn {
                 int read_length = m_readholderp->m_read_length[m_read];
                 string read;
                 read.reserve(read_length);
-                size_t position = m_position+m_readholderp->m_front_shift+2*(read_length-1);
+                size_t position = m_position+2*(read_length-1);
                 for(int i = 0; i < read_length; ++i) {
                     read.push_back(bin2NT[(m_readholderp->m_storage[position/64] >> position%64) & 3]);
                     position -= 2;
@@ -310,7 +301,7 @@ namespace DeBruijn {
             // returns inversed binary sequence (not complemented) 
             // assumes that destination is extended properly and filled with 0s    
             void BSeq(int shift, uint64_t* destination) const {
-                size_t position = m_position+m_readholderp->m_front_shift+2*shift;
+                size_t position = m_position+2*shift;
                 size_t len = 2*(ReadLen()-shift);
                 m_readholderp->CopyBits(position, position+len, destination, 0, (len+63)/64);
             }
@@ -326,7 +317,7 @@ namespace DeBruijn {
                     word = ((word & 0x00000000FFFFFFFF) << 32) | ((word >> 32) & 0x00000000FFFFFFFF); // swap 32 bit chunks                                        
                 }; 
 
-                size_t position = m_position+m_readholderp->m_front_shift+2*right_clip;  // sequence stored reversed
+                size_t position = m_position+2*right_clip;  // sequence stored reversed
                 size_t len = 2*(ReadLen()-right_clip-left_clip);
                 size_t destination_size = (len+63)/64;
                 
@@ -451,10 +442,9 @@ namespace DeBruijn {
         }
 
 
-        deque<uint64_t> m_storage;
-        deque<uint32_t> m_read_length;
+        vector<uint64_t> m_storage;
+        vector<uint32_t> m_read_length;
         size_t m_total_seq;
-        int m_front_shift;
         bool m_contains_paired;
     };
 

@@ -51,7 +51,8 @@ public:
     void PushBack(const SElement& el);
     void PushFront(const CCigar other_cigar);
     string CigarString(int qstart, int qlen) const; // qstart, qlen identify notaligned 5'/3' parts
-    string DetailedCigarString(int qstart, int qlen, const  char* query, const  char* subject) const;
+    string DetailedCigarString(int qstart, int qlen, const  char* query, const  char* subject, bool include_soft_clip = true) const;
+    string BtopString(int qstart, int qlen, const  char* query, const  char* subject) const;
     TRange QueryRange() const { return TRange(m_qfrom, m_qto); }
     TRange SubjectRange() const { return TRange(m_sfrom, m_sto); }
     TCharAlign ToAlign(const  char* query, const  char* subject) const;

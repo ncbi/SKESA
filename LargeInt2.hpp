@@ -161,6 +161,7 @@ public:
         return res;
     }
     u_int64_t* getPointer() { return reinterpret_cast<u_int64_t*>(value); }
+    const u_int64_t* getPointer() const { return reinterpret_cast<const u_int64_t*>(value); }
 
 private:
     friend LargeInt<2> revcomp (const LargeInt<2>& i,   size_t sizeKmer);
