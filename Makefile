@@ -57,7 +57,14 @@ LIBS = $(VDB_LIB) -lncbi-ngs-c++-static -lncbi-vdb-static \
 %.o: %.cpp
 	$(CC) -c -o $@ $< $(CFLAGS)
 
-all: skesa gfa_connector kmercounter
+binaries=skesa gfa_connector kmercounter
+
+all: $(binaries)
+
+.PHONY: clean
+
+clean: 
+	rm -f $(binaries) *.o $(NGS_DIR)/ngs.done
 
 glb_align.o: glb_align.hpp Makefile
 

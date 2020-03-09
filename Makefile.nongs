@@ -46,7 +46,14 @@ LIBS = -Wl,-Bstatic $(BOOST_LIB) \
 %.o: %.cpp
 	$(CC) -c -o $@ $< $(CFLAGS)
 
-all: skesa gfa_connector kmercounter
+binaries=skesa gfa_connector kmercounter
+
+all: $(binaries)
+
+.PHONY: clean
+
+clean: 
+	rm -f $(binaries) *.o
 
 glb_align.o: glb_align.hpp Makefile
 
