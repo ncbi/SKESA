@@ -81,7 +81,7 @@ int main(int argc, const char* argv[]) {
         }
 
         if(argm.count("version")) {
-            cout << "kmercounter v.2.1.0";
+            cout << "kmercounter 2.1.0";
 #ifdef SVN_REV
             cout << "-SVN_" << SVN_REV;
 #endif

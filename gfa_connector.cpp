@@ -129,10 +129,11 @@ int main(int argc, const char* argv[])
         }
 
         if(argm.count("version")) {
-            cout << "gfa_connector v.1.1.0" << endl;
+            cout << "gfa_connector 1.1.0" << endl;
 #ifdef SVN_REV
             cout << "SVN revision:" << SVN_REV << endl << endl;
 #endif
+            return 0;
         }
 
         ofstream gfa_out;
