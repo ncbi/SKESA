@@ -32,8 +32,12 @@ endif
 
 CC = c++ -std=c++11
 CFLAGS = -D NO_NGS -Wall -Wno-format-y2k  -pthread -fPIC -O3 -finline-functions -fstrict-aliasing \
-         -fomit-frame-pointer -msse4.2 $(BOOST_INCL) \
-         
+         -fomit-frame-pointer -msse4.2 $(BOOST_INCL)
+
+PLATFORM=$(shell uname -s)
+
+ifeq ($(PLATFORM),Linux)
+
 LIBS = -Wl,-Bstatic $(BOOST_LIB) \
        -lboost_program_options \
        -lboost_iostreams \
@@ -42,6 +46,19 @@ LIBS = -Wl,-Bstatic $(BOOST_LIB) \
        -lboost_chrono \
        -lboost_system \
        -Wl,-Bdynamic -lrt -ldl -lm  -lpthread -lz
+
+else
+
+LIBS = $(BOOST_LIB) \
+       -lboost_program_options \
+       -lboost_iostreams \
+       -lboost_regex \
+       -lboost_timer \
+       -lboost_chrono \
+       -lboost_system \
+       -ldl -lm -lpthread -lz
+
+endif
 
 %.o: %.cpp
 	$(CC) -c -o $@ $< $(CFLAGS)

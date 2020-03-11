@@ -43,6 +43,10 @@ CC = c++ -std=c++11 -fdiagnostics-color=never
 CFLAGS = -Wall -Wno-format-y2k  -pthread -fPIC -O3 -finline-functions -fstrict-aliasing \
          -fomit-frame-pointer -msse4.2 $(BOOST_INCL) $(NGS_INCL) $(VDB_INCL)
 
+PLATFORM=$(shell uname -s)
+
+ifeq ($(PLATFORM),Linux)
+
 LIBS = $(VDB_LIB) -lncbi-ngs-c++-static -lncbi-vdb-static \
        $(NGS_LIB) -lngs-c++-static \
        -Wl,-Bstatic $(BOOST_LIB) \
@@ -53,6 +57,19 @@ LIBS = $(VDB_LIB) -lncbi-ngs-c++-static -lncbi-vdb-static \
        -lboost_chrono \
        -lboost_system \
        -Wl,-Bdynamic -lrt -ldl -lm  -lpthread -lz
+
+else
+
+LIBS = $(BOOST_LIB) \
+       -lboost_program_options \
+       -lboost_iostreams \
+       -lboost_regex \
+       -lboost_timer \
+       -lboost_chrono \
+       -lboost_system \
+       -ldl -lm -lpthread -lz
+
+endif
 
 %.o: %.cpp
 	$(CC) -c -o $@ $< $(CFLAGS)
