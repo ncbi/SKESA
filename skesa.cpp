@@ -28,7 +28,6 @@
 
 #include "readsgetter.hpp"
 #include "assembler.hpp"
-#include <malloc.h>
 
 using namespace boost::program_options;
 using namespace DeBruijn;
