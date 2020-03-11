@@ -501,7 +501,7 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
     typedef list<string> TStrList;
     template<class DBGraph> using TBases = deque<typename DBGraph::Successor>;
     
-    template<class DBGraph> class SContig;
+    template<class DBGraph> struct SContig;
     template<class DBGraph> using TContigList = list<SContig<DBGraph>>;
 
 
