@@ -1319,7 +1319,7 @@ namespace DeBruijn {
         }
         CKmerHashCount& Kmers() { return m_hash_table; }
         size_t KmerNum() const { return m_kmer_num; }
-        
+        bool IsStranded() const { return m_is_stranded; }              // indicates if contains stranded information            
 
     private:
 

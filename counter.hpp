@@ -287,7 +287,7 @@ namespace DeBruijn {
         // mem_available - allowed memory in bytes
         // ncores - number of cores
         CKmerCounter(const list<array<CReadHolder,2>>& reads, int kmer_len, int min_count, bool is_stranded, int64_t mem_available, int ncores) : 
-            m_kmer_len(kmer_len), m_min_count(min_count), m_is_stranded(is_stranded), m_mem_available(mem_available), m_ncores(ncores), m_reads(reads) {
+            m_kmer_len(kmer_len), m_min_count(min_count), m_is_stranded(is_stranded), m_ncores(ncores), m_reads(reads) {
 
             cerr << endl << "Kmer len: " << m_kmer_len << endl;
             CStopWatch timer;
@@ -535,7 +535,6 @@ namespace DeBruijn {
         int m_kmer_len;
         int m_min_count;
         bool m_is_stranded;
-        size_t m_mem_available;
         int m_ncores;
         const list<array<CReadHolder,2>>& m_reads;
         list<TKmerCount> m_uniq_kmers;                       // storage for kmer buckets; at the end will have one element which is the result     
