@@ -117,12 +117,14 @@ public:
             *this = *this + (std::find(bin2NT.begin(), bin2NT.end(), *i) - bin2NT.begin());
         }
     }
+    /*
     IntegerTemplate(std::vector<char>::const_iterator begin, std::vector<char>::const_iterator end) : IntegerTemplate(end-begin, 0)  {
         for(auto i = begin; i != end; ++i) {
             *this = (*this) << 2;
             *this = *this + (std::find(bin2NT.begin(), bin2NT.end(), *i) - bin2NT.begin());
         }
     }
+    */
     
 
     /**Construct from a different size IntegerTemplate
@@ -285,6 +287,8 @@ public:
      */
     u_int8_t  operator[]  (size_t idx) const   { return  boost::apply_visitor (Integer_value_at(idx), *(*this)); }
 
+    u_int8_t  Codon(size_t idx) const   { return  boost::apply_visitor (Codon_at(idx), *(*this)); }
+
     /** Get the reverse complement of a kmer encoded as an IntegerTemplate object. Note that the kmer size must be known.
      * \param[in] a : kmer value to be reversed-complemented
      * \param[in] sizeKmer : size of the kmer
@@ -431,6 +435,10 @@ private:
     struct Integer_value_at : public Visitor<u_int8_t,size_t>   {
         Integer_value_at (size_t idx) : Visitor<u_int8_t,size_t>(idx) {}
         template<typename T>  u_int8_t operator() (const T& a) const { return a[this->arg];  }};
+
+    struct Codon_at : public Visitor<u_int8_t,size_t>   {
+        Codon_at (size_t idx) : Visitor<u_int8_t,size_t>(idx) {}
+        template<typename T>  u_int8_t operator() (const T& a) const { return a.Codon(this->arg);  }};
 
     struct Integer_toString : public Visitor<std::string,size_t>   {
         Integer_toString (size_t c) : Visitor<std::string,size_t>(c) {}

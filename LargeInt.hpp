@@ -553,6 +553,15 @@ public:
      */
     u_int8_t  operator[]  (size_t idx) const    {  return (this->value[idx/32] >> (2*idx%64)) & 3; }
 
+    uint8_t Codon(size_t idx) const   { 
+        int cell = idx/32;
+        int shift = (2*idx)%64;
+        uint8_t codon = value[cell] >> shift;
+        if(shift > 58) 
+            codon += value[cell+1] << (64-shift);
+        return codon&63;
+    }
+
     u_int64_t oahash() const {
         // hash = XOR_of_series[hash(i-th chunk iof 64 bits)]   
         u_int64_t result = 0, chunk, mask = ~0;

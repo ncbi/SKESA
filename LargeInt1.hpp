@@ -102,6 +102,9 @@ public:
 
     u_int8_t  operator[]  (size_t idx) const   {  return (value[0] >> (2*idx)) & 3; }
 
+    uint8_t Codon(size_t idx) const   { return (value[0] >> (2*idx)) & 63; }
+    
+
     /********************************************************************************/
     friend std::ostream & operator<<(std::ostream & s, const LargeInt<1> & l)
     {

@@ -90,6 +90,7 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
 
     mutex out_mutex;
 
+    enum EForkType { eNoFork = 0, eLeftFork = 1, eRightFork = 2, eLeftBranch = 4, eRightBranch = 8, eSecondaryKmer = 16 };
 
     typedef vector<char> TVariation;
     struct SeqInterval {
@@ -686,7 +687,8 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
             if(m_seq.VariableChunk(0) || (int)m_seq.ChunkLenMax(0) < m_kmer_len)
                 return Node();
 
-            TKmer kmer(m_seq.front().front().begin(), m_seq.front().front().begin()+m_kmer_len); // front must be unambiguous
+            string kmer_seq(m_seq.front().front().begin(), m_seq.front().front().begin()+m_kmer_len);
+            TKmer kmer(kmer_seq); // front must be unambiguous
             return m_graph.GetNode(kmer);
         }
         Node BackKmer() const { 
@@ -694,7 +696,8 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
             if(m_seq.VariableChunk(last) || (int)m_seq.ChunkLenMax(last) < m_kmer_len)
                 return Node();
 
-            TKmer kmer(m_seq.back().front().end()-m_kmer_len, m_seq.back().front().end());
+            string kmer_seq(m_seq.back().front().end()-m_kmer_len, m_seq.back().front().end());
+            TKmer kmer(kmer_seq);
             return m_graph.GetNode(kmer);
         }
 
@@ -710,7 +713,8 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                 return BackKmer(); 
             } else if(m_seq.size() >= 3) {                           // snp
                 if((int)m_seq.ChunkLenMax(last_index-2) >= m_kmer_len) {
-                    TKmer kmer(m_seq[last_index-2].front().end()-m_kmer_len, m_seq[last_index-2].front().end());
+                    string kmer_seq(m_seq[last_index-2].front().end()-m_kmer_len, m_seq[last_index-2].front().end());
+                    TKmer kmer(kmer_seq);
                     return m_graph.GetNode(kmer);
                 }
             }
@@ -722,7 +726,8 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                 return FrontKmer();
             } else if(m_seq.size() >= 3) {                 // snp
                 if((int)m_seq.ChunkLenMax(2) >= m_kmer_len) {
-                    TKmer kmer(m_seq[2].front().begin(), m_seq[2].front().begin()+m_kmer_len); // front must be unambiguous
+                    string kmer_seq(m_seq[2].front().begin(), m_seq[2].front().begin()+m_kmer_len);
+                    TKmer kmer(kmer_seq); // front must be unambiguous
                     return m_graph.GetNode(kmer);
                 }
             }
@@ -1649,7 +1654,7 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
             return make_pair(s, false);
         }
 
-        bool ExtendableSuccessor(const Successor& initial_suc) const {
+        bool ExtendableSuccessor(const Successor& initial_suc, double factor) const {
             int kmer_len = m_graph.KmerLen();
             int total_len = max(100, kmer_len);
 
@@ -1667,7 +1672,7 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                 
                 if(len == kmer_len) {
                     vector<Successor> step_back = m_graph.GetNodeSuccessors(m_graph.ReverseComplement(node));
-                    FilterLowAbundanceNeighbors(step_back);
+                    FilterLowAbundanceNeighbors(step_back, factor);
                     bool found = false;
                     for(auto& back : step_back) {
                         if(back.m_nt == Complement(initial_suc.m_nt)) {
@@ -1691,7 +1696,7 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                 }
         
                 vector<Successor> successors = m_graph.GetNodeSuccessors(node);
-                FilterLowAbundanceNeighbors(successors);
+                FilterLowAbundanceNeighbors(successors, factor);
 
                 if(!successors.empty()) {
                     for(int i = successors.size()-1; i >= 0; --i)
@@ -1701,6 +1706,36 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
 
             return false;
         }
+        
+        vector<Successor> GetReversibleNodeSuccessorsF(const Node& node, int* fork_infop = nullptr, bool check_extension = true) const {
+            if(fork_infop != nullptr)
+                *fork_infop = eNoFork;
+            vector<Successor> neighbors = m_graph.GetNodeSuccessors(node);             
+            FilterNeighbors(neighbors, check_extension, 1.);
+            if(neighbors.size() > 1 && fork_infop != nullptr)
+                *fork_infop |= eRightFork;            
+
+            for(auto& neighbor : neighbors) {
+                vector<Successor> step_back = m_graph.GetNodeSuccessors(m_graph.ReverseComplement(neighbor.m_node));                
+                FilterNeighbors(step_back, check_extension, 1.);
+                if(step_back.size() > 1 && fork_infop != nullptr)
+                    *fork_infop |= eLeftFork;                
+
+                bool found = false;
+                for(auto& back : step_back) {
+                    if(back.m_node == m_graph.ReverseComplement(node)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if(!found) {
+                    neighbors.clear();
+                    return neighbors;
+                }
+            }
+
+            return neighbors;
+        }        
 
         vector<Successor> GetReversibleNodeSuccessors(const Node& node, int* numbackp = nullptr, bool check_extension = true) const {
             vector<Successor> neighbors = m_graph.GetNodeSuccessors(node);
@@ -1727,12 +1762,11 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
             return neighbors;
         }
 
-
         bool GoodNode(const Node& node) const { return m_graph.Abundance(node) >= m_low_count; }
         int HistMin() const { return m_hist_min; }
 
         // removes noise forks
-        void FilterLowAbundanceNeighbors(vector<Successor>& successors) const {
+        void FilterLowAbundanceNeighbors(vector<Successor>& successors, double factor) const {
             // low abundance forks
             if(successors.size() > 1) {
                 int abundance = 0;
@@ -1755,7 +1789,7 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
             // strand specific noise reduction for Illumina issue of GGT->GG[ACG]
             if(m_graph.GraphIsStranded() && successors.size() > 1) {
 
-                double fraction = 0.1*m_fraction;
+                double fraction = factor*m_fraction;
             
                 int target = -1;
                 for(int j = 0; target < 0 && j < (int)successors.size(); ++j) {
@@ -1778,24 +1812,28 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
 
         }
         
-        void FilterNeighbors(vector<Successor>& successors, bool check_extension) const {
+        bool FilterNeighbors(vector<Successor>& successors, bool check_extension, double factor = 0.1) const {
+            bool keep_fork_info = false;
+
             // low abundance forks
-            FilterLowAbundanceNeighbors(successors);
+            FilterLowAbundanceNeighbors(successors, factor);
 
             //not extendable forks
             if(check_extension && successors.size() > 1 && m_graph.Abundance(successors.front().m_node) > 5) {
                 for(int i = 0; i < (int)successors.size(); ) {
-                    if(ExtendableSuccessor(successors[i]))
+                    if(ExtendableSuccessor(successors[i], factor)) {
                         ++i;
-                    else
+                    } else {
                         successors.erase(successors.begin()+i);
+                        keep_fork_info = true;
+                    }
                 }
             }
 
             // strand specific noise reduction for Illumina issue of GGT->GG[ACG] for negative strand and low coverage (the prev loop didn't work)
             if(m_graph.GraphIsStranded() && successors.size() > 1 && (!check_extension || m_graph.Abundance(successors.front().m_node) <= 5)) {
 
-                double fraction = 0.1*m_fraction;
+                double fraction = factor*m_fraction;
                 int target = -1;
 
                 for(int j = 0; target < 0 && j < (int)successors.size(); ++j) {
@@ -1839,6 +1877,8 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                     }
                 } 
             }
+
+            return keep_fork_info;
         }
 
         DBGraph& Graph() { return m_graph; }
@@ -2138,7 +2178,7 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                 int shift = get<2>(snp_data);
                 int diff_len = get<4>(snp_data);
 
-                /*                                                                               
+                /*
                 cerr << "Last chunk: ";
                 for(char c : *last_chunkp)
                     cerr << c;
@@ -2157,7 +2197,7 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                     cerr << endl;
 
                 }
-                */                                                                                          
+                */                                                                                                         
 
                 if(dist_to_snp == 0) {                // first snp in cluster
                     get<0>(rslt) = seqs;
@@ -2181,7 +2221,7 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                         seq.insert(seq.end(), seqs.front().begin(), seqs.front().end()-shift);
                         len = max(len, (int)seq.size());
                     }
-                    if(len > max_extent)                                          // longer than threshold
+                    if(len > max_extent || (size_t)distance(get<0>(rslt).begin(), get<0>(rslt).end()) > m_max_branch)  // longer than threshold ot too many variants
                         return tuple<TLocalVariants, Node, int>();
                     existing_shift = 0;
                     if(shift > 0)
@@ -3199,7 +3239,8 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                                 int last_chunk = ext_seq.ChunkLenMax(ext_chunks-1);
                                 if(last_chunk < kmer_len && (int)ext_seq.LenMax()-last_chunk-(int)ext_seq.ChunkLenMax(ext_chunks-2) < intrusion) // last chunk and snp will be clipped resulting in shorter sequence
                                     skip = true;
-                                TKmer back_kmer(contig.m_seq.back().front().end()-intrusion-kmer_len, contig.m_seq.back().front().end()-intrusion);
+                                string back_kmer_seq(contig.m_seq.back().front().end()-intrusion-kmer_len, contig.m_seq.back().front().end()-intrusion);
+                                TKmer back_kmer(back_kmer_seq);
                                 if(!Graph().GetNode(back_kmer).isValid()) // new back kmer is not in the graph
                                     skip = true;
                             }
@@ -3227,7 +3268,8 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                                 int last_chunk = ext_seq.ChunkLenMax(ext_chunks-1);
                                 if(last_chunk < kmer_len && (int)ext_seq.LenMax()-last_chunk-(int)ext_seq.ChunkLenMax(ext_chunks-2) < intrusion) // last chunk and snp will be clipped resulting in shorter sequence
                                     skip = true;
-                                TKmer front_kmer(contig.m_seq.front().front().begin()+intrusion, contig.m_seq.front().front().begin()+intrusion+kmer_len);
+                                string front_kmer_seq(contig.m_seq.front().front().begin()+intrusion, contig.m_seq.front().front().begin()+intrusion+kmer_len);
+                                TKmer front_kmer(front_kmer_seq);
                                 if(!Graph().GetNode(front_kmer).isValid()) // new back kmer is not in the graph
                                     skip = true;
                             }

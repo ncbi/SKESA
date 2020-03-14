@@ -29,6 +29,7 @@
 
 #include "DBGraph.hpp"
 #include "graphdigger.hpp"
+#include "genetic_code.hpp"
 #include <random>
 
 using namespace std;
@@ -37,7 +38,6 @@ namespace DeBruijn {
     typedef DBGraph::Node Node;
     typedef DBGraph::Successor Successor;
     typedef CDBGraphDigger<DBGraph> GraphDigger;
-    enum EForkType { eNoFork = 0, eLeftFork = 1, eRightFork = 2 };
 
     // unlimited counter
     struct SVarNum {
@@ -155,6 +155,24 @@ namespace DeBruijn {
             base.m_left_kmers.push_front(node);
             push_front(base);
         }
+        void ClipLeft(int len) { erase(begin(), begin()+len); }
+        void ClipRight(int len) { erase(end()-len, end()); }
+        void SplitForksAndKmersFrom(SegSeq& other) {
+            if(size() != other.size())
+                throw runtime_error("Can't SplitForksAndKmersFrom from different size SegSeq");
+            for(size_t p = 0; p < size(); ++p) {
+                auto& base = (*this)[p];
+                auto& other_base = other[p];
+                base.m_fork |= other_base.m_fork;
+                base.m_left_kmers.splice_after(base.m_left_kmers.before_begin(), other_base.m_left_kmers);
+                base.m_left_kmers.sort();
+                base.m_left_kmers.unique();
+                base.m_right_kmers.splice_after(base.m_right_kmers.before_begin(), other_base.m_right_kmers);
+                base.m_right_kmers.sort();
+                base.m_right_kmers.unique();
+            }
+
+        }
         void ReverseComplement() {
             reverse(this->begin(), this->end());
             for(auto& base : *this) {
@@ -186,6 +204,7 @@ namespace DeBruijn {
     struct GFASegment;
     typedef typename list<GFASegment>::iterator GFAIterator;
     struct SGFAIteratorHash { size_t operator()(const GFAIterator& i) const { return std::hash<void*>()(&*i); }};
+    typedef unordered_set<GFAIterator, SGFAIteratorHash> GFAIteratorUSet;
 
     struct GFASegment {
         GFASegment(const SegSeq& seq = SegSeq()) : m_seq(seq) {}
@@ -224,6 +243,7 @@ namespace DeBruijn {
         bool m_right_check = false;
         bool m_marked_for_erase = false;
         bool m_cyclical = false;
+        int m_frame = -1; // frame of the left end (0-based position%3); used only for protein targets in which case it is >= 0
     };
 
     struct Position {
@@ -233,7 +253,7 @@ namespace DeBruijn {
         int m_pos;
     };
     struct Path {
-        //paths including differnt copies copies of the same sements are equal
+        //paths including differnt copies of the same sements are equal
         bool operator==(const Path& other) const {
             if(m_len != other.m_len || m_left != other.m_left || m_right != other.m_right || m_segments.size() != other.m_segments.size())
                 return false;
@@ -384,13 +404,53 @@ namespace DeBruijn {
     typedef CKmerHashMap<tuple<TReadPosInfo, TReadPosInfo, SAtomic<uint8_t>>, 8> TReadPos;
     typedef unordered_map<const GFAIterator, tuple<list<GFAIterator>,list<GFAIterator>>, SGFAIteratorHash> TCopyInfo;
 
+    void RecalculateCopyInfo(TCopyInfo& copies, const GFAIteratorUSet& erased) {
+        for(auto icopy = copies.begin(); icopy != copies.end(); ) {
+            auto& checked = get<0>(icopy->second);
+            auto& not_checked = get<1>(icopy->second);
+            checked.erase(remove_if(checked.begin(), checked.end(), [&](GFAIterator p) { return erased.count(p); }), checked.end());                  // remove erased from list
+            not_checked.erase(remove_if(not_checked.begin(), not_checked.end(), [&](GFAIterator p) { return erased.count(p); }), not_checked.end());  // remove erased from list
+            if(checked.empty() && not_checked.empty()) {      // remove empty entry
+                icopy = copies.erase(icopy); 
+            } else if(erased.count(icopy->first)) {           // remove erased from keys 
+                GFAIterator firstp;
+                if(checked.empty()) {
+                    firstp = not_checked.front();
+                    not_checked.pop_front();
+                } else {
+                    firstp = checked.front();
+                    checked.pop_front();
+                }
+                firstp->m_copy_of = nullptr;
+                for(GFAIterator p : checked) {
+                    p->m_copy_of = &(*firstp);
+                    p->m_copy_ofi = firstp;
+                }
+                for(GFAIterator p : not_checked) {
+                    p->m_copy_of = &(*firstp);
+                    p->m_copy_ofi = firstp;
+                }
+                if(!checked.empty() || !not_checked.empty()) {
+                    if(copies.size() == copies.max_load_factor()*copies.bucket_count())
+                        throw runtime_error("Unexpected rehash");
+                    auto& rslt = copies[firstp];
+                    get<0>(rslt).splice(get<0>(rslt).end(), checked);
+                    get<1>(rslt).splice(get<1>(rslt).end(), not_checked);
+                }
+                icopy = copies.erase(icopy);
+            } else {
+                ++icopy;
+            }
+        }
+    }
+
     class GFAGraph;
     typedef list<GFAGraph> TGFACollection;
+    typedef map<string, tuple<string, int, unordered_set<uint32_t>, SAtomic<uint8_t>>> TTargets;  // [accession], seq, min_len, words, centinel
 
     class GFAGraph : public list<GFASegment> {            
     protected:
         string m_acc;
-        string m_consensus;
         deque<CKmerHashCount::Index> m_ksignature;
         size_t m_size = 0;
         int m_score = 0;
@@ -398,16 +458,14 @@ namespace DeBruijn {
         int m_max_num = 0;
         int m_id = 0;
         SAtomic<uint8_t> m_sentinel = 0;
+        bool m_is_aa = false;
 
     public:
         GFAGraph(const string& acc, int kmer_len) : m_acc(acc), m_kmer_len(kmer_len) {}
-
         void ReverseComplement() {
             for(auto& seg : *this)
                 seg.ReverseComplement();
-            ReverseComplementSeq(m_consensus.begin(), m_consensus.end());
         }
-        string& Consensus() { return m_consensus; }
         deque<CKmerHashCount::Index>& KSignature() { return m_ksignature; }
         const deque<CKmerHashCount::Index>& KSignature() const { return m_ksignature; }
         int& Score() { return m_score; }
@@ -418,26 +476,34 @@ namespace DeBruijn {
         int MaxNum() const { return m_max_num; }
 
         GFAGraph& operator=(const GFAGraph& other) {
-            map<const GFASegment*, GFAIterator> other_to_copy;
-            for(auto& seg : other) {
-                push_back(seg);
-                other_to_copy[&seg] = prev(end());
-            }
-            m_acc = other.m_acc;
-            m_consensus = other.m_consensus;
-            m_ksignature = other.m_ksignature;
-            m_score = other.m_score;
-            m_kmer_len = other.m_kmer_len;
-            m_sentinel = other.m_sentinel;
+            if(this != &other) {
+                clear();
+                map<const GFASegment*, GFAIterator> other_to_copy;
+                for(auto& seg : other) {
+                    push_back(seg);
+                    other_to_copy[&seg] = prev(end());
+                }
+                m_acc = other.m_acc;
+                m_ksignature = other.m_ksignature;
+                m_size = other.m_size;
+                m_score = other.m_score;
+                m_kmer_len = other.m_kmer_len;
+                m_max_num = other.m_max_num;
+                m_id = other.m_id;
+                m_sentinel = other.m_sentinel;
         
-            m_max_num = other.m_max_num;
-            for(auto& seg : *this) {
-                seg.m_num = ++m_max_num;
-                for(auto& lc : seg.m_left_connections)
-                    lc = other_to_copy[&(*lc)];
-                for(auto& rc : seg.m_right_connections)
-                    rc = other_to_copy[&(*rc)];
-            }        
+                for(auto& seg : *this) {
+                    seg.m_num = ++m_max_num;
+                    for(auto& lc : seg.m_left_connections)
+                        lc = other_to_copy[&(*lc)];
+                    for(auto& rc : seg.m_right_connections)
+                        rc = other_to_copy[&(*rc)];
+                    if(seg.m_copy_of != nullptr) {
+                        seg.m_copy_ofi = other_to_copy[seg.m_copy_of];
+                        seg.m_copy_of = &(*seg.m_copy_ofi);
+                    }
+                }        
+            }
 
             return *this;
         }
@@ -459,6 +525,16 @@ namespace DeBruijn {
         }
 
         void CutToChunks() {
+            for(auto& segm : *this) {
+                if(segm.m_seq.back().m_fork & eRightFork) {
+                    for(auto rc : segm.m_right_connections) 
+                        rc->m_seq.front().m_fork |= eRightBranch;                
+                }
+                if(segm.m_seq.front().m_fork & eLeftFork) {
+                    for(auto lc : segm.m_left_connections)
+                        lc->m_seq.back().m_fork |= eLeftBranch;
+                }
+            }
             for(auto it = begin(); it != end(); ++it) {
                 auto& segm = *it;
                 auto& seq = segm.m_seq;
@@ -469,9 +545,14 @@ namespace DeBruijn {
                         push_front(seq.substr(0, len));
                         ++m_size;
                         seq.erase(seq.begin(), seq.begin()+len);
+                        front().m_seq.back().m_fork |= eLeftBranch;
                         front().m_group = segm.m_group;
                         front().m_cyclical = segm.m_cyclical;
                         front().m_num = ++m_max_num;
+                        if(segm.m_frame >= 0) {
+                            front().m_frame = segm.m_frame;
+                            segm.m_frame = (segm.m_frame+len)%3;
+                        }
                         TransferLeftLinks(it, begin());
                         LinkSegments(begin(), it);
                     }
@@ -480,9 +561,14 @@ namespace DeBruijn {
                         push_front(seq.substr(0, len));
                         ++m_size;
                         seq.erase(seq.begin(), seq.begin()+len);
+                        seq.front().m_fork |= eRightBranch;
                         front().m_group = segm.m_group;
                         front().m_cyclical = segm.m_cyclical;
                         front().m_num = ++m_max_num;
+                        if(segm.m_frame >= 0) {
+                            front().m_frame = segm.m_frame;
+                            segm.m_frame = (segm.m_frame+len)%3;
+                        }
                         TransferLeftLinks(it, begin());
                         LinkSegments(begin(), it);
                     }
@@ -490,181 +576,9 @@ namespace DeBruijn {
             }                 
         }
 
-        //deprecated
-        void SplitSubGraph(GFAIterator it, bool toright, int extend, int dropoff_extend, TCopyInfo& copies) {
-            list<GFAIterator> original_order;
-            unordered_map<GFAIterator, GFAIterator, SGFAIteratorHash> copy_info; // iterator to itself -> iterator to copy  
-            unordered_set<GFAIterator, SGFAIteratorHash> end_segments;
-            {
-                unordered_set<GFAIterator, SGFAIteratorHash> all_successors;
-                {
-                    list<Path> paths = Expand(it, toright ? it->m_seq.size()-1 : 0, toright ? 0 : extend+dropoff_extend, toright ? extend+dropoff_extend : 0);
-                    for(auto& path : paths) {
-                        for(auto& segi :path.m_segments) {
-                            if(segi != it)
-                                all_successors.insert(segi);
-                        }
-                    }
-                }
-
-                list<Path> paths = Expand(it, toright ? it->m_seq.size()-1 : 0, toright ? 0 : extend, toright ? extend : 0);
-                for(auto& path : paths) {
-                    for(int i = 1; i <= (int)path.m_segments.size()-2; ++i) {
-                        if(copy_info.emplace(path.m_segments[i], path.m_segments[i]).second) // all segments within extend except ends  
-                            original_order.push_back(path.m_segments[i]);
-                    }
-                }
-
-                list<GFAIterator> links;
-                for(auto iorig : original_order) {
-                    auto& connections = toright ? iorig->m_left_connections : iorig->m_right_connections;
-                    for(auto& cn : connections) {
-                        if(!copy_info.count(cn) && all_successors.count(cn))
-                            links.push_back(cn);
-                    }
-                }
-                while(!links.empty()) {
-                    if(copy_info.emplace(links.front(), links.front()).second)
-                        original_order.push_back(links.front());
-                    auto& connections = toright ? links.front()->m_left_connections : links.front()->m_right_connections;
-                    for(auto& cn : connections) {
-                        if(!copy_info.count(cn) && all_successors.count(cn))
-                            links.push_back(cn);
-                    }                
-                    links.pop_front();
-                }
-
-                for(auto& stc : copy_info) {
-                    auto& connections = toright ? stc.first->m_right_connections : stc.first->m_left_connections;
-                    for(auto cn : connections) {
-                        if(!copy_info.count(cn))
-                            end_segments.insert(cn);    //outgoing connections  
-                    }
-                }            
-            }
-
-            // copy segments; remember iterator; change num of copy (main graph)    
-            for(auto iorig : original_order) {
-                PushSegmentBack(*iorig);
-                copy_info[iorig] = prev(end());
-                if(back().m_copy_of == nullptr) {
-                    back().m_copy_of = &(*iorig);
-                    back().m_copy_ofi = iorig;
-                }
-                if(back().m_left_check && back().m_right_check)
-                    get<1>(copies[back().m_copy_ofi]).push_back(prev(end()));
-                else
-                    get<0>(copies[back().m_copy_ofi]).push_back(prev(end()));
-            }
-
-            for(auto iorig : original_order) {
-                auto icpy = copy_info[iorig];
-                auto& orig = *iorig;
-                auto& cpy = *icpy;
-                if(toright)
-                    cpy.m_left_connections.remove(it);
-                else
-                    cpy.m_right_connections.remove(it);
-                for(auto& lc : cpy.m_left_connections) {
-                    auto rslt = copy_info.find(lc);
-                    if(rslt != copy_info.end()) {                              // link to copied segment    
-                        lc = rslt->second;
-                    } else {                                                   // fix link if not copied        
-                        if(toright || !end_segments.count(lc))
-                            lc->m_right_connections.remove(iorig);             // remove link TO orig   
-                        lc->m_right_connections.remove(icpy);                  // insert link to copy (ensure not duplicated)   
-                        lc->m_right_connections.push_front(icpy);
-                    }
-                }
-                for(auto& rc : cpy.m_right_connections) {
-                    auto rslt = copy_info.find(rc);
-                    if(rslt != copy_info.end()) {                               // link to copied segment   
-                        rc = rslt->second;
-                    } else {                                                    // fix link if not copied   
-                        if(!toright || !end_segments.count(rc))
-                            rc->m_left_connections.remove(iorig);               // remove link TO orig  
-                        rc->m_left_connections.remove(icpy);                    // insert link to copy (ensure not duplicated)  
-                        rc->m_left_connections.push_front(icpy);
-                    }
-                }
-                if(toright)
-                    orig.m_left_connections.remove_if([&](const GFAIterator& i) { return i != it && !copy_info.count(i); });   // remove links to main graph    
-                else
-                    orig.m_right_connections.remove_if([&](const GFAIterator& i) { return i != it && !copy_info.count(i); });  // remove links to main graph    
-            }
-        }
-        //deprecated    
-        void RemovePath(Path& path, bool toright, int dropoff_extend, TCopyInfo& copies) {
-            int segn = path.m_segments.size();
-            int path_len = path.Length();
-            unordered_set<GFAIterator, SGFAIteratorHash> erased;
-            if(toright) {
-                int ext = path_len-1;
-                for(int j = 1; j < segn; ++j) {
-                    auto& next_seg_lc = path.m_segments[j]->m_left_connections;
-                    if(distance(next_seg_lc.begin(), next_seg_lc.end()) > 1)
-                        SplitSubGraph(path.m_segments[j-1], true, ext, dropoff_extend, copies);                
-                    ext -= path.m_segments[j]->m_seq.size();
-                }
-                
-                int clip = path.m_right+1;
-                for(int j = segn-2; j > 0; --j) {
-                    auto& segi = path.m_segments[j];
-                    auto& connections = segi->m_right_connections;
-                    if(distance(connections.begin(), connections.end()) < 2) {
-                        erased.insert(segi);
-                        clip += segi->m_seq.size();
-                    } else {
-                        break;
-                    }
-                }                                               
-
-                path.m_segments[segn-1]->m_left_connections.remove(path.m_segments[segn-2]);
-                path.m_segments[segn-2]->m_right_connections.remove(path.m_segments[segn-1]);  
-
-                path.ClipRight(clip);
-            } else {
-                int ext = path_len-1;
-                for(int j = segn-2; j >= 0; --j){
-                    auto& next_seg_rc = path.m_segments[j]->m_right_connections;
-                    if(distance(next_seg_rc.begin(), next_seg_rc.end()) > 1) {
-                        SplitSubGraph(path.m_segments[j+1], false, ext, dropoff_extend, copies);
-                    }
-                    ext -= path.m_segments[j]->m_seq.size();
-                }
-                                                                       
-                int clip = path.m_segments.front()->m_seq.size()-path.m_left;
-                for(int j = 1; j < segn-1; ++j) {
-                    auto& segi = path.m_segments[j];
-                    auto& connections = segi->m_left_connections;
-                    if(distance(connections.begin(), connections.end()) < 2) {
-                        erased.insert(segi);
-                        clip += segi->m_seq.size();
-                    } else {
-                        break;
-                    }
-                }
-
-                path.m_segments[0]->m_right_connections.remove(path.m_segments[1]);
-                path.m_segments[1]->m_left_connections.remove(path.m_segments[0]);                                    
-
-                path.ClipLeft(clip);
-            }
-
-        
-            for(auto segi : erased) {
-                RemoveLinksToSegment(segi);
-                segi->m_left_connections.clear();
-                segi->m_right_connections.clear();
-                segi->m_marked_for_erase = true;
-                --m_size;
-                //            erase(segi);  
-            }        
-        }
-
         void RemovePath(Path& path, bool toright, TCopyInfo& copies) {
             int segn = path.m_segments.size();
-            unordered_set<GFAIterator, SGFAIteratorHash> erased;
+            GFAIteratorUSet erased;
             SplitInletsBeforeClip(path, toright, copies);
             if(toright) {
                 int clip = path.m_right+1;
@@ -699,11 +613,12 @@ namespace DeBruijn {
             }
         
             for(auto segi : erased) {
-                RemoveLinksToSegment(segi);
-                segi->m_left_connections.clear();
-                segi->m_right_connections.clear();
-                segi->m_marked_for_erase = true;
-                --m_size;
+                if(!segi->m_marked_for_erase) {
+                    RemoveLinksToSegment(segi);
+                    segi->m_left_connections.clear();
+                    segi->m_right_connections.clear();
+                    segi->m_marked_for_erase = true;
+                }
             }        
         }
 
@@ -719,8 +634,7 @@ namespace DeBruijn {
                 // copy segments; remember iterator; change num of copy (main graph)        
                 for(int i = left_inlet; i < segn-1; ++i) {
                     auto iorig = path.m_segments[i];
-                    PushSegmentBack(*iorig);
-                    copy_info[iorig] = prev(end());
+                    copy_info[iorig] = PushSegmentBack(*iorig);
                     if(back().m_copy_of == nullptr) {
                         back().m_copy_of = &(*iorig);
                         back().m_copy_ofi = iorig;
@@ -775,8 +689,7 @@ namespace DeBruijn {
                 // copy segments; remember iterator; change num of copy (main graph)        
                 for(int i = 1; i <= right_inlet; ++i) {
                     auto iorig = path.m_segments[i];
-                    PushSegmentBack(*iorig);
-                    copy_info[iorig] = prev(end());
+                    copy_info[iorig] = PushSegmentBack(*iorig);
                     if(back().m_copy_of == nullptr) {
                         back().m_copy_of = &(*iorig);
                         back().m_copy_ofi = iorig;
@@ -838,6 +751,7 @@ namespace DeBruijn {
 
         void GenerateKmers(DBGraph& dbg_graph) {
             m_ksignature.clear();
+            int kmer_len = dbg_graph.KmerLen();
 
             for(auto it = begin(); it != end(); ++it) {
                 auto& segm = *it;
@@ -850,15 +764,15 @@ namespace DeBruijn {
                     s.push_back(base.m_nt);
                 }
 
-                if(seq_len >= m_kmer_len) {
+                if(seq_len >= kmer_len) {
                     CReadHolder rh(false);
                     rh.PushBack(s);
-                    int lpos = seq_len-m_kmer_len;
-                    for(CReadHolder::kmer_iterator ik = rh.kbegin(m_kmer_len); ik != rh.kend(); ++ik, --lpos) { // iteration from last kmer to first    
+                    int lpos = seq_len-kmer_len;
+                    for(CReadHolder::kmer_iterator ik = rh.kbegin(kmer_len); ik != rh.kend(); ++ik, --lpos) { // iteration from last kmer to first    
                         auto kmer = dbg_graph.GetNode(*ik);
                         if(kmer.isValid()) {
                             auto& lk = seq[lpos].m_left_kmers;
-                            auto& rk = seq[lpos+m_kmer_len-1].m_right_kmers;
+                            auto& rk = seq[lpos+kmer_len-1].m_right_kmers;
                             lk.push_front(kmer);
                             rk.push_front(kmer);
                             m_ksignature.push_back(kmer);                            
@@ -867,14 +781,14 @@ namespace DeBruijn {
                 }
 
                 if(!segm.m_left_connections.empty()) {
-                    int l = min(m_kmer_len-1, seq_len);
-                    list<Path> lpaths = Expand(it, 0, m_kmer_len-1, l-1);
+                    int l = min(kmer_len-1, seq_len);
+                    list<Path> lpaths = Expand(it, 0, kmer_len-1, l-1);
                     for(auto& path : lpaths) {
-                        if(path.Length() >= m_kmer_len) {
+                        if(path.Length() >= kmer_len) {
                             CReadHolder rh(false);
                             rh.PushBack(path.Sequence());
                             int rpos = l-1;
-                            for(CReadHolder::kmer_iterator ik = rh.kbegin(m_kmer_len); ik != rh.kend(); ++ik, --rpos) { // iteration from last kmer to first    
+                            for(CReadHolder::kmer_iterator ik = rh.kbegin(kmer_len); ik != rh.kend(); ++ik, --rpos) { // iteration from last kmer to first    
                                 auto kmer = dbg_graph.GetNode(*ik);
                                 if(kmer.isValid()) {
                                     auto& rk = seq[rpos].m_right_kmers;
@@ -889,14 +803,14 @@ namespace DeBruijn {
                 }
 
                 if(!segm.m_right_connections.empty()) {
-                    int l = min(m_kmer_len-1, seq_len);
-                    list<Path> rpaths = Expand(it, seq_len-1, l-1, m_kmer_len-1);
+                    int l = min(kmer_len-1, seq_len);
+                    list<Path> rpaths = Expand(it, seq_len-1, l-1, kmer_len-1);
                     for(auto& path : rpaths) {
-                        if(path.Length() >= m_kmer_len) {
+                        if(path.Length() >= kmer_len) {
                             CReadHolder rh(false);
                             rh.PushBack(path.Sequence());
-                            int lpos = seq_len-l+path.Length()-m_kmer_len;
-                            for(CReadHolder::kmer_iterator ik = rh.kbegin(m_kmer_len); ik != rh.kend(); ++ik, --lpos) { // iteration from last kmer to first    
+                            int lpos = seq_len-l+path.Length()-kmer_len;
+                            for(CReadHolder::kmer_iterator ik = rh.kbegin(kmer_len); ik != rh.kend(); ++ik, --lpos) { // iteration from last kmer to first    
                                 auto kmer = dbg_graph.GetNode(*ik);
                                 if(kmer.isValid()) {
                                     auto& lk = seq[lpos].m_left_kmers;
@@ -935,7 +849,7 @@ namespace DeBruijn {
         void GenerateKmersAndScores(DBGraph& dbg_graph) {
             GenerateKmers(dbg_graph);
             CalculateChainLength();
-            CalculateCoverageAndEnumerateSegments(dbg_graph);
+            CalculateCoverageAndEnumerateSegments();
         }
 
         Path ExpandEdgeToMax(GFAIterator left, GFAIterator right) {
@@ -1095,6 +1009,91 @@ namespace DeBruijn {
             path.m_len = len;
             
             return path;
+        }
+
+        list<Path> ExpandToFork(GFAIterator start, bool toright, size_t maxp) {
+            list<Path> expansion(1); 
+            auto pathp = &expansion.back(); 
+            pathp->m_segments.push_back(start);
+
+            size_t total = 1;
+            if(toright) {
+                pathp->m_current_pos.m_segmp = start;
+                pathp->m_current_pos.m_pos = 0;
+                pathp->m_current_seg = 0;
+                pathp->m_right = start->m_seq.size()-1;
+                pathp->m_left = 0;
+
+                bool keep_doing = true;
+                while(keep_doing && total <= maxp) {
+                    keep_doing = false;
+                    for(auto& path : expansion) {
+                        auto& segs = path.m_segments; 
+                        if(segs.back()->LeftFork())
+                            continue;
+                        auto rcp = &segs.back()->m_right_connections;
+                        for(auto it = rcp->begin(); it != rcp->end(); ++it) {
+                            keep_doing = true;
+                            auto pathp = &path;
+                            if(next(it) != rcp->end()) {
+                                expansion.push_front(path);
+                                pathp = &expansion.front();
+                                ++total;
+                            }
+                            pathp->m_segments.push_back(*it);
+                        }
+                    }
+                }
+            } else {
+                bool keep_doing = true;
+                while(keep_doing && total <= maxp) {
+                    keep_doing = false;
+                    for(auto& path : expansion) {
+                        auto& segs = path.m_segments;                    
+                        if(segs.front()->RightFork())
+                            continue;
+                        auto lcp = &path.m_segments.front()->m_left_connections;
+                        for(auto it = lcp->begin(); it != lcp->end(); ++it) {
+                            keep_doing = true;
+                            auto pathp = &path;
+                            if(next(it) != lcp->end()) {
+                                expansion.push_front(path);
+                                pathp = &expansion.front();
+                                ++total;
+                            }
+                            pathp->m_segments.push_front(*it);
+                        }
+                    }
+                }
+            }
+
+            for(auto it_loop = expansion.begin(); it_loop != expansion.end(); ) {
+                auto it = it_loop++;
+                auto& path = *it;
+                if(toright) {
+                    if(!path.m_segments.back()->LeftFork()) {
+                        expansion.erase(it);
+                        continue;
+                    }
+                    path.m_current_pos.m_pos = 0;
+                    path.m_current_seg = 0;
+                } else {
+                    if(!path.m_segments.front()->RightFork()) {
+                        expansion.erase(it);
+                        continue;
+                    }
+                    path.m_current_pos.m_pos = path.m_segments.back()->m_seq.size()-1;
+                    path.m_current_seg = path.m_segments.size()-1;
+                }
+                path.m_current_pos.m_segmp = start;
+                path.m_left = 0;
+                path.m_right = path.m_segments.back()->m_seq.size()-1;
+                path.m_len = 0;
+                for(auto iseg :path.m_segments )
+                    path.m_len += iseg->m_seq.size();  
+            }
+
+            return expansion;            
         }
             
         list<Path> Expand(GFAIterator start, int start_pos, int to_left, int to_right, size_t maxp = numeric_limits<size_t>::max(), bool repeat_check = false) const {
@@ -1260,38 +1259,205 @@ namespace DeBruijn {
             RemoveLinksToSegment(it);
             erase(it);
         }
-        void PushSegmentBack(const GFASegment& segm) {
+        GFAIterator PushSegmentBack(const GFASegment& segm) {
             ++m_size;
             push_back(segm);
             back().m_num = ++m_max_num;
+            return prev(end());
+        }
+        GFAIterator PushSegmentFront(const GFASegment& segm) {
+            ++m_size;
+            push_front(segm);
+            front().m_num = ++m_max_num;
+            return begin();
         }
 
         void CalculateChainLength() {
-            for(auto& seg : *this) {
-                seg.m_left_len = 0;
-                seg.m_right_len = 0;
+            stack<GFAIterator> current_lsegs;
+            stack<GFAIterator> current_rsegs;
+            for(auto iseg = begin(); iseg != end(); ++iseg) {
+                if(iseg->m_left_connections.empty())
+                    current_lsegs.push(iseg);
+                if(iseg->m_right_connections.empty())
+                    current_rsegs.push(iseg);
+                iseg->m_left_len = 0;                
+                iseg->m_right_len = 0;
             }
+
+            while(!current_lsegs.empty()) {
+                stack<GFAIterator> next_step_segs;
+                while(!current_lsegs.empty()) {
+                    GFAIterator iseg = current_lsegs.top();
+                    current_lsegs.pop();
+                    for(auto jseg : iseg->m_right_connections) {
+                        int next_len = iseg->m_left_len+iseg->m_seq.size();
+                        if(next_len > jseg->m_left_len) {
+                            jseg->m_left_len = next_len;
+                            next_step_segs.push(jseg);
+                        }
+                    }
+                }
+                std::swap(current_lsegs, next_step_segs);
+            }
+
+            while(!current_rsegs.empty()) {
+                stack<GFAIterator> next_step_segs;
+                while(!current_rsegs.empty()) {
+                    GFAIterator iseg = current_rsegs.top();
+                    current_rsegs.pop();
+                    for(auto jseg : iseg->m_left_connections) {
+                        int next_len = iseg->m_right_len+iseg->m_seq.size();
+                        if(next_len > jseg->m_right_len) {
+                            jseg->m_right_len = next_len;
+                            next_step_segs.push(jseg);
+                        }
+                    }
+                }
+                std::swap(current_rsegs, next_step_segs);
+            }
+        }
+
+        void ClipToCodons() {
             bool keep_doing = true;
             while(keep_doing) {
                 keep_doing = false;
-                for(auto& seg : *this) {
-                    int max_left = 0;
-                    for(auto& lc : seg.m_left_connections)
-                        max_left = max(max_left, lc->m_left_len+(int)lc->m_seq.size());                                           
-                    if(max_left > seg.m_left_len) {
-                        seg.m_left_len = max_left;
-                        keep_doing = true;
+                for(auto it_loop = begin(); it_loop != end(); ) {
+                    auto it = it_loop++;
+                    if(it->m_frame < 0)
+                        throw runtime_error("Unknown frame");                                        
+                    if(it->m_left_connections.empty() && it->m_frame > 0) {
+                        int lclip = 3-it->m_frame;
+                        if((int)it->m_seq.size() > lclip) {
+                            it->m_seq.ClipLeft(lclip);
+                            it->m_frame = 0;
+                        } else {
+                            RemoveSegment(it);
+                            keep_doing = true;
+                            continue;
+                        }
                     }
-                        
-                    int max_right = 0;
-                    for(auto& rc : seg.m_right_connections)
-                        max_right = max(max_right, rc->m_right_len+(int)rc->m_seq.size());                    
-                    if(max_right > seg.m_right_len) {
-                        seg.m_right_len = max_right;
-                        keep_doing = true;
+                    if(it->m_right_connections.empty() && (it->m_frame+it->m_seq.size())%3 > 0) {
+                        int rclip = (it->m_frame+it->m_seq.size())%3;
+                        if((int)it->m_seq.size() > rclip) {
+                            it->m_seq.ClipRight(rclip);
+                        } else {
+                            RemoveSegment(it);
+                            keep_doing = true;
+                            continue;
+                        }
                     }
-                }                
+                }
             }
+        }
+
+        void TranslateToAA(const GeneticCode& gcode, DBGraph& dbg_graph) {
+
+            //move forks to codon boundaries
+            for(auto iloop = begin(); iloop != end(); ) {
+                auto iseg = iloop++;
+                size_t seg_len = iseg->m_seq.size();
+                int frame = iseg->m_frame;
+                iseg->m_frame = -1;
+                if(iseg->LeftFork() && iseg->m_frame > 0) {
+                    size_t shift = 3-iseg->m_frame;
+                    if(seg_len > shift || iseg->m_right_connections.empty()) { // long or right end
+                        auto delta = iseg->m_seq.substr(0, min(shift, seg_len));
+                        for(auto lcloop = iseg->m_left_connections.begin(); lcloop != iseg->m_left_connections.end(); ) {
+                            auto lc = *lcloop++;
+                            auto newseg = PushSegmentFront(GFASegment(delta));
+                            newseg->m_group = iseg->m_group;
+                            UnLinkSegments(lc, iseg);
+                            LinkSegments(lc, newseg);
+                            LinkSegments(newseg, iseg);
+                        }
+                    } else {  // short and in the middle
+                        for(auto lc : iseg->m_left_connections) {
+                            for(auto rc : iseg->m_right_connections) {
+                                auto newseg = PushSegmentFront(*iseg);
+                                LinkSegments(lc, newseg);
+                                LinkSegments(newseg, rc);
+                            }
+                        }
+                    }
+                    if(seg_len > shift) {
+                        iseg->m_seq.ClipLeft(shift);
+                        frame = 0;           // needed for next step
+                        seg_len -= shift;
+                    } else {
+                        RemoveSegment(iseg);
+                        continue;
+                    }
+                }
+
+                if(iseg->RightFork() && (frame+seg_len)%3 > 0) {
+                    size_t shift = (frame+seg_len)%3;
+                    if(seg_len > shift || iseg->m_left_connections.empty()) { // long or left end
+                        auto delta = iseg->m_seq.substr(seg_len-shift);
+                        for(auto rcloop = iseg->m_right_connections.begin(); rcloop != iseg->m_right_connections.end(); ) {
+                            auto rc = *rcloop++;
+                            auto newseg = PushSegmentFront(GFASegment(delta));
+                            newseg->m_group = iseg->m_group;
+                            UnLinkSegments(iseg, rc);
+                            LinkSegments(newseg, rc);
+                            LinkSegments(iseg, newseg);
+                        } 
+                    } else {  // short and in the middle
+                        for(auto lc : iseg->m_left_connections) {
+                            for(auto rc : iseg->m_right_connections) {
+                                auto newseg = PushSegmentFront(*iseg);
+                                LinkSegments(lc, newseg);
+                                LinkSegments(newseg, rc);
+                            }
+                        }
+                    }
+                    if(seg_len > shift) {
+                        iseg->m_seq.ClipRight(shift);
+                        seg_len -= shift;
+                    } else {
+                        RemoveSegment(iseg);
+                        continue;
+                    }
+                }
+            }
+            MergeSimpleLinks();  //after this all segments contain whole codons
+
+            GenerateKmers(dbg_graph);
+            for(auto& segm : *this) {
+                string prot_seq;
+                for(auto& base : segm.m_seq)
+                    prot_seq.push_back(base.m_nt);
+                prot_seq = gcode.Translate(prot_seq, false);
+
+                SegSeq segm_seq;
+                for(size_t p = 0; p < prot_seq.size(); ++p) {
+                    segm_seq.emplace_back();
+                    SegBase& base = segm_seq.back();
+                    base.m_nt = prot_seq[p];
+                    for(int frame = 0; frame < 3; ++frame) {
+                        size_t nucp = 3*p+frame;
+                        base.m_left_kmers.splice_after(base.m_left_kmers.before_begin(), segm.m_seq[nucp].m_left_kmers);
+                        base.m_right_kmers.splice_after(base.m_right_kmers.before_begin(), segm.m_seq[nucp].m_right_kmers);
+                    }
+                }
+                std::swap(segm_seq, segm.m_seq);
+            }
+            m_is_aa = true;
+            MergeRedundantLinks();
+            
+            //calculate coverage;   
+            for(auto& seg : *this) {
+                seg.m_kmer_count = 0;
+                for(auto& base : seg.m_seq) {
+                    size_t lcount = 0;
+                    size_t rcount = 0;
+                    for(Node& node : base.m_left_kmers)
+                        lcount += dbg_graph.Abundance(node);                    
+                    for(Node& node : base.m_right_kmers)
+                        rcount += dbg_graph.Abundance(node);                    
+                    seg.m_kmer_count += max(lcount, rcount);
+                }
+            }            
+            CalculateCoverageAndEnumerateSegments();
         }
 
         void SnpsToAmbig() {
@@ -1389,82 +1555,162 @@ namespace DeBruijn {
                     ++iseg;
                 }
             }            
-        }
-    
-        void ReduceGraph() {
-            typedef map<int, pair<size_t, GFAIterator>> TLenInfo;        
-            unordered_map<GFAIterator, TLenInfo, SGFAIteratorHash> len_info;
-            for(GFAIterator it = begin(); it != end(); ++it)
-                len_info[it][it->m_seq.size()] = make_pair(it->m_kmer_count, end());
-            
-            bool keep_doing = true;
-            while(keep_doing) {
-                keep_doing = false;
-                for(GFAIterator it = begin(); it != end(); ++it) {
-                    auto& seg = *it;
-                    if(!seg.m_right_connections.empty()) {
-                        TLenInfo right_info;
-                        for(auto rc : seg.m_right_connections) {
-                            for(auto& info : len_info[rc]) {
-                                int len = seg.m_seq.size()+info.first;
-                                size_t count = seg.m_kmer_count+info.second.first;
-                                if(count > right_info[len].first) {
-                                    right_info[len].first = count;
-                                    right_info[len].second = rc;
-                                }
-                            }
-                        }
-                        if(right_info != len_info[it]) {
-                            right_info.swap(len_info[it]);
-                            keep_doing = true;
-                        }
-                    }
-                }
-            }
+        }    
 
-            TLenInfo best_info;
-            for(GFAIterator it = begin(); it != end(); ++it) {
-                if(it->m_left_connections.empty()) {
-                    for(auto& info : len_info[it]) {
-                        if(info.second.first > best_info[info.first].first) {
-                            best_info[info.first].first = info.second.first;
-                            best_info[info.first].second = it;
-                        }
-                    }
-                }
-            }
-
-            unordered_set<GFAIterator, SGFAIteratorHash> selected;
-            for(auto& info : best_info) {
-                GFAIterator iseg = info.second.second;
-                int len = info.first;
-                while(iseg != end()) {
-                    GFAIterator next = len_info[iseg][len].second;
-                    len -= iseg->m_seq.size();
-                    selected.insert(iseg);
-                    iseg = next;
-                }
-            }
-
-            for(GFAIterator it_loop = begin(); it_loop != end(); ) {
-                GFAIterator it = it_loop++;
-                if(!selected.count(it)) 
-                    RemoveSegment(it);
-            }
-        }
-    
-
-        int RemoveShortChains(int minlen) {
+        int RemoveShortChains(int minlen, bool mark_only = false) {
             int maxlen = 0;
             for(auto it_loop = this->begin(); it_loop != this->end(); ) {
                 auto it = it_loop++;
                 auto& seg = *it;
                 int len = seg.m_left_len+seg.m_seq.size()+seg.m_right_len;
                 maxlen = max(maxlen, len);
-                if(len < minlen) 
-                    RemoveSegment(it);
+                if(len < minlen) {
+                    if(mark_only) {
+                        if(!it->m_marked_for_erase) {
+                            it->m_marked_for_erase = true;
+                            RemoveLinksToSegment(it);
+                            it->m_left_connections.clear();
+                            it->m_right_connections.clear();
+                        }
+                    } else {
+                        RemoveSegment(it);
+                    }                    
+                }
             }
             return maxlen;
+        }
+
+        void MergeRedundantDuplicates() {
+            bool keep_doing = true;
+            while(keep_doing) {
+                keep_doing = false;
+                for(auto iseg = begin(); iseg != end(); ++iseg) {
+                    if(iseg->RightFork()) {
+                        for(auto it = iseg->m_right_connections.begin(); it != iseg->m_right_connections.end(); ++it) {
+                            auto is = *it;
+                            if(is == iseg)     // self      
+                                continue;
+                            auto ilc = is->m_left_connections;
+                            ilc.sort([](const GFAIterator& a, const GFAIterator& b){ return &(*a) < &(*b); }); // compare physical pointers 
+                            for(auto jt = next(it); jt != iseg->m_right_connections.end(); ) {
+                                auto js = *jt++;
+                                if(js == iseg) // self      
+                                    continue;
+                                if(is->m_right_check != js->m_right_check) // mixed status
+                                    continue;
+                                if((is->m_copy_of != nullptr && is->m_copy_of == js->m_copy_of) || is->m_copy_of == &(*js) || js->m_copy_of == &(*is)) {  // copies of the same
+                                    auto jlc = js->m_left_connections;
+                                    jlc.sort([](const GFAIterator& a, const GFAIterator& b){ return &(*a) < &(*b); }); // compare physical pointers 
+                                    // only     if i and j connect back to the same segments    
+                                    if(ilc != jlc)
+                                        continue;
+
+                                    keep_doing = true; 
+                                    js->m_marked_for_erase = true;
+                                    TransferRightLinks(js, is);
+                                    RemoveLinksToSegment(js);
+                                    js->m_left_connections.clear();
+                                }
+                            }
+                        }
+                    }
+                    if(iseg->LeftFork()) {
+                        for(auto it = iseg->m_left_connections.begin(); it != iseg->m_left_connections.end(); ++it) {
+                            auto is = *it;
+                            if(is == iseg)     // self      
+                                continue;
+                            auto irc = is->m_right_connections;
+                            irc.sort([](const GFAIterator& a, const GFAIterator& b){ return &(*a) < &(*b); }); // compare physical pointers 
+                            for(auto jt = next(it); jt != iseg->m_left_connections.end(); ) {
+                                auto js = *jt++;
+                                if(js == iseg) // self      
+                                    continue;
+                                if(is->m_left_check != js->m_left_check) // mixed status
+                                    continue;
+                                if((is->m_copy_of != nullptr && is->m_copy_of == js->m_copy_of) || is->m_copy_of == &(*js) || js->m_copy_of == &(*is)) {  // copies of the same
+                                    auto jrc = js->m_right_connections;
+                                    jrc.sort([](const GFAIterator& a, const GFAIterator& b){ return &(*a) < &(*b); }); // compare physical pointers 
+                                    // only     if i and j connect back to the same segments    
+                                    if(irc != jrc)
+                                        continue;
+
+                                    keep_doing = true;
+                                    js->m_marked_for_erase = true;
+                                    TransferLeftLinks(js, is);
+                                    RemoveLinksToSegment(js);
+                                    js->m_right_connections.clear();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        void RemoveRedundantPaths(size_t maxp) {
+            for (auto it = begin(); it != end(); ++it) {
+                if(it->m_left_connections.empty()) {
+                    list<Path> direct_paths = ExpandToFork(it, true, maxp);
+                    for(auto& dpath : direct_paths) {
+                        int len = dpath.Length();
+                        auto iback = dpath.m_segments.back();
+                        list<Path> reverse_paths = Expand(iback, iback->m_seq.size()-1, len-1, 0, maxp);
+                        for(auto& rpath : reverse_paths) {
+                            int dnum = dpath.m_segments.size();
+                            int rnum = rpath.m_segments.size();
+                            if(len != rpath.Length() || rpath.m_segments[rnum-2] == dpath.m_segments[dnum-2])
+                                continue;
+                            if(dpath.Sequence() == rpath.Sequence()) {
+                                for(int i = dnum-2; i >= 0; --i) {
+                                    UnLinkSegments(dpath.m_segments[i], dpath.m_segments[i+1]);                                    
+                                    if(!dpath.m_segments[i]->m_right_connections.empty())
+                                        break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if(it->m_right_connections.empty()) {
+                    list<Path> direct_paths = ExpandToFork(it, false, maxp);
+                    for(auto& dpath : direct_paths) {
+                        int len = dpath.Length();
+                        list<Path> reverse_paths = Expand(dpath.m_segments.front(), 0, 0, len-1, maxp);
+                        for(auto& rpath : reverse_paths) {
+                            if(len != rpath.Length() || rpath.m_segments[1] == dpath.m_segments[1])
+                                continue;
+                            if(dpath.Sequence() == rpath.Sequence()) {
+                                for(int i = 1; i < (int)dpath.m_segments.size(); ++i) {
+                                    UnLinkSegments(dpath.m_segments[i-1], dpath.m_segments[i]);                                    
+                                    if(!dpath.m_segments[i]->m_left_connections.empty())
+                                        break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        GFAIterator ReduceGraph(int min_len, TCopyInfo& copies, GFAIterator inext) {
+            MergeRedundantDuplicates();
+            if(min_len > 0) {
+                CalculateChainLength();
+                RemoveShortChains(min_len, true);   
+            }
+
+            GFAIteratorUSet erased;
+            for(auto iseg = begin(); iseg != end(); ++iseg) {
+                if(iseg->m_marked_for_erase)
+                    erased.insert(iseg);
+            }
+            RecalculateCopyInfo(copies, erased);
+            for(auto iseg : erased) {
+                if(iseg == inext)
+                    ++inext;
+                RemoveSegment(iseg);
+            }         
+
+            return inext;
         }
 
         int AssignGroupNumber() {
@@ -1536,19 +1782,20 @@ namespace DeBruijn {
             for(auto it_loop = this->begin(); it_loop != this->end(); ) {
                 auto it = it_loop++;
                 auto& seg = *it;
-                if(!seg.m_left_connections.empty() && next(seg.m_left_connections.begin()) == seg.m_left_connections.end()) {  // exactly one link  
+                if(seg.LeftSingle()) {  // exactly one link  
                     auto left_seg = seg.m_left_connections.front();
-                    if(left_seg != it && next(left_seg->m_right_connections.begin()) == left_seg->m_right_connections.end()) { // exactly one link and not self 
+                    if(left_seg != it && left_seg->RightSingle()) { // exactly one link and not self 
                         left_seg->m_seq += seg.m_seq;
                         TransferRightLinks(it, left_seg);
                         RemoveSegment(it);
                         continue;
                     }
                 }
-                if(!seg.m_right_connections.empty() && next(seg.m_right_connections.begin()) == seg.m_right_connections.end()) { // exactly one link        
+                if(seg.RightSingle()) { // exactly one link        
                     auto right_seg = seg.m_right_connections.front();
-                    if(right_seg != it && next(right_seg->m_left_connections.begin()) == right_seg->m_left_connections.end()) {  // exactly one link and not self       
+                    if(right_seg != it && right_seg->LeftSingle()) {  // exactly one link and not self       
                         right_seg->m_seq = seg.m_seq+right_seg->m_seq;
+                        right_seg->m_frame = seg.m_frame;
                         TransferLeftLinks(it, right_seg);
                         RemoveSegment(it);
                         continue;
@@ -1568,11 +1815,11 @@ namespace DeBruijn {
                 for(auto iseg = this->begin(); iseg != this->end(); ++iseg) {
                     auto& seg = *iseg;
 
-                    if(!seg.m_left_connections.empty() && next(seg.m_left_connections.begin()) != seg.m_left_connections.end()) {  // fork  
+                    if(seg.LeftFork()) {  // fork  
                         for(auto it_loop = seg.m_left_connections.begin(); it_loop != seg.m_left_connections.end(); ) {
                             auto it = it_loop++;
                             auto is = *it;
-                            if(!is->m_left_connections.empty() || next(is->m_right_connections.begin()) != is->m_right_connections.end()) // TODO more than 1 right connections???  
+                            if(!is->m_left_connections.empty() || is->RightFork()) 
                                 continue;
                             for(auto jt = seg.m_left_connections.begin(); jt != seg.m_left_connections.end(); ++jt) {
                                 auto js = *jt;
@@ -1586,7 +1833,7 @@ namespace DeBruijn {
                         }
                     }
 
-                    while(!seg.m_left_connections.empty() && next(seg.m_left_connections.begin()) != seg.m_left_connections.end()) { // fork        
+                    while(seg.LeftFork()) { // fork        
                         for(auto it = seg.m_left_connections.begin(); it != seg.m_left_connections.end(); ++it) {
                             auto is = *it;
                             if(is == iseg)     // self      
@@ -1610,41 +1857,46 @@ namespace DeBruijn {
                                 auto rslt = mismatch(is->m_seq.rbegin(), is->m_seq.rbegin()+len, js->m_seq.rbegin(), [](const SegBase& a, const SegBase& b) { return a.m_nt == b.m_nt; });
                                 int matches = rslt.first-is->m_seq.rbegin();
                                 if(matches > 0) {
-                                    if(ilen > matches) { // cut i and link parts            
-                                        auto newi = this->insert(this->end(), GFASegment(is->m_seq.substr(0, ilen-matches)));
-                                        ++m_size;
+                                    if(ilen > matches) { // cut i and link parts 
+                                        auto newi = PushSegmentBack(GFASegment(is->m_seq.substr(0, ilen-matches)));
                                         newi->m_group = seg.m_group;
                                         newi->m_cyclical = is->m_cyclical;
                                         TransferLeftLinks(is, newi);
-                                        is->m_seq = is->m_seq.substr(ilen-matches);
+                                        is->m_seq.ClipLeft(ilen-matches);
+                                        if(is->m_frame >= 0) {
+                                            newi->m_frame = is->m_frame;
+                                            is->m_frame = (is->m_frame+ilen-matches)%3;
+                                        }
                                         LinkSegments(newi, is);
                                     }
                                     if(jlen > matches) { // cut j and keep first part and link it to i          
-                                        auto newj = this->insert(this->end(), GFASegment(js->m_seq.substr(0, jlen-matches)));
-                                        ++m_size;
+                                        auto newj = PushSegmentBack(GFASegment(js->m_seq.substr(0, jlen-matches)));
                                         newj->m_group = seg.m_group;
+                                        newj->m_cyclical = js->m_cyclical;
                                         if(js->m_cyclical)
                                             is->m_cyclical = true;
+                                        newj->m_frame = js->m_frame;
                                         TransferLeftLinks(js, newj);
                                         LinkSegments(newj, is);
+                                        js->m_seq.ClipLeft(jlen-matches);
                                     } else {             // move j links to i           
                                         if(js->m_cyclical)
                                             is->m_cyclical = true;
                                         TransferLeftLinks(js, is);
                                     }
-                                    // transfer fork info from j to i                                   
-                                    for(int p = 0; p < matches; ++p)
-                                        is->m_seq[p].m_fork |= js->m_seq[jlen-matches+p].m_fork;
+                                    // transfer fork info and kmers from j to i  
+                                    is->m_seq.SplitForksAndKmersFrom(js->m_seq);
                                     // delete j
                                     RemoveSegment(js);
                                     keep_doing = true;
                                 }
                             }
                         }
-                        if(next(seg.m_left_connections.begin()) == seg.m_left_connections.end()) {      
+                        if(seg.LeftSingle()) {      
                             auto left_seg = seg.m_left_connections.front();
-                            if(next(left_seg->m_right_connections.begin()) == left_seg->m_right_connections.end()) { // only one connection left - merge    
+                            if(left_seg->RightSingle()) { // only one connection left - merge    
                                 seg.m_seq = left_seg->m_seq+seg.m_seq;
+                                seg.m_frame = left_seg->m_frame;
                                 TransferLeftLinks(left_seg, iseg);
                                 RemoveSegment(left_seg);
                                 continue;
@@ -1653,11 +1905,11 @@ namespace DeBruijn {
                         break;                            
                     }
 
-                    if(!seg.m_right_connections.empty() && next(seg.m_right_connections.begin()) != seg.m_right_connections.end()) {  // fork   
+                    if(seg.RightFork()) {  // fork   
                         for(auto it_loop = seg.m_right_connections.begin(); it_loop != seg.m_right_connections.end(); ) {
                             auto it = it_loop++;
                             auto is = *it;
-                            if(!is->m_right_connections.empty() || next(is->m_left_connections.begin()) != is->m_left_connections.end()) // TODO more than 1 left connections???    
+                            if(!is->m_right_connections.empty() || is->LeftFork())   
                                 continue;
                             for(auto jt = seg.m_right_connections.begin(); jt != seg.m_right_connections.end(); ++jt) {
                                 auto js = *jt;
@@ -1671,7 +1923,7 @@ namespace DeBruijn {
                         }
                     }
 
-                    while(!seg.m_right_connections.empty() && next(seg.m_right_connections.begin()) != seg.m_right_connections.end()) { // fork     
+                    while(seg.RightFork()) { // fork     
                         for(auto it = seg.m_right_connections.begin(); it != seg.m_right_connections.end(); ++it) {
                             auto is = *it;
                             if(is == iseg)     // self      
@@ -1696,40 +1948,42 @@ namespace DeBruijn {
                                 int matches = rslt.first-is->m_seq.begin();
                                 if(matches > 0) {
                                     if(ilen > matches) { // cut i and link parts            
-                                        auto newi = this->insert(this->end(), GFASegment(is->m_seq.substr(matches)));
-                                        ++m_size;
+                                        auto newi = PushSegmentBack(GFASegment(is->m_seq.substr(matches)));
                                         newi->m_group = seg.m_group;
                                         newi->m_cyclical = is->m_cyclical;
+                                        if(is->m_frame >= 0)
+                                            newi->m_frame = (is->m_frame+matches)%3;
                                         TransferRightLinks(is, newi);
-                                        is->m_seq = is->m_seq.substr(0, matches);
+                                        is->m_seq.ClipRight(ilen-matches);
                                         LinkSegments(is, newi);
                                     }
                                     if(jlen > matches) { // cut j and keep second part and link it to i         
-                                        auto newj = this->insert(this->end(), GFASegment(js->m_seq.substr(matches)));
-                                        ++m_size;
+                                        auto newj = PushSegmentBack(GFASegment(js->m_seq.substr(matches)));
                                         newj->m_group = seg.m_group;
                                         newj->m_cyclical = js->m_cyclical;
+                                        if(js->m_frame >= 0)
+                                            newj->m_frame = (js->m_frame+matches)%3;
                                         if(js->m_cyclical)
                                             is->m_cyclical = true;
                                         TransferRightLinks(js, newj);
                                         LinkSegments(is, newj);
+                                        js->m_seq.ClipRight(jlen-matches);
                                     } else {             // move j links to i           
                                         if(js->m_cyclical)
                                             is->m_cyclical = true;
                                         TransferRightLinks(js, is);
                                     }
-                                    // transfer fork info from j to i   
-                                    for(int p = 0; p < matches; ++p)
-                                        is->m_seq[p].m_fork |= js->m_seq[p].m_fork;
+                                    // transfer fork info and kmers from j to i 
+                                    is->m_seq.SplitForksAndKmersFrom(js->m_seq);
                                     // delete j 
                                     RemoveSegment(js);
                                     keep_doing = true;
                                 }
                             }
                         }
-                        if(next(seg.m_right_connections.begin()) == seg.m_right_connections.end()) {        
+                        if(seg.RightSingle()) {        
                             auto right_seg = seg.m_right_connections.front();
-                            if(next(right_seg->m_left_connections.begin()) == right_seg->m_left_connections.end()) { // only one connection left - merge    
+                            if(right_seg->LeftSingle()) { // only one connection left - merge    
                                 seg.m_seq += right_seg->m_seq;
                                 TransferRightLinks(right_seg, iseg);
                                 RemoveSegment(right_seg);
@@ -1749,101 +2003,102 @@ namespace DeBruijn {
             CalculateChainLength();            
         }
 
-        void MergeRedundantDuplicates() {
-            bool keep_doing = true;
-            while(keep_doing) {
-                keep_doing = false;
-                for(auto iseg = begin(); iseg != end(); ++iseg) {
-                    if(iseg->RightFork()) {
-                        for(auto it = iseg->m_right_connections.begin(); it != iseg->m_right_connections.end(); ++it) {
-                            auto is = *it;
-                            if(is == iseg)     // self      
-                                continue;
-                            auto ilc = is->m_left_connections;
-                            ilc.sort([](const GFAIterator& a, const GFAIterator& b){ return &(*a) < &(*b); }); // compare physical pointers 
-                            for(auto jt = next(it); jt != iseg->m_right_connections.end(); ) {
-                                auto js = *jt++;
-                                if(js == iseg) // self      
-                                    continue;
-                                if(is->m_right_check != js->m_right_check) // mixed status
-                                    continue;
-                                if((is->m_copy_of != nullptr && is->m_copy_of == js->m_copy_of) || is->m_copy_of == &(*js) || js->m_copy_of == &(*is)) {  // copies of the same
-                                    auto jlc = js->m_left_connections;
-                                    jlc.sort([](const GFAIterator& a, const GFAIterator& b){ return &(*a) < &(*b); }); // compare physical pointers 
-                                    // only     if i and j connect back to the same segments    
-                                    if(ilc != jlc)
-                                        continue;
+        GFAIteratorUSet LeftBranchSegments(GFAIterator it) {
+            GFAIteratorUSet branch;
+            GFAIteratorUSet inlets;
 
-                                    keep_doing = true;
-                                    --m_size;
-                                    js->m_marked_for_erase = true;
-                                    TransferRightLinks(js, is);
-                                    RemoveLinksToSegment(js);
-                                    js->m_left_connections.clear();
-                                }
-                            }
-                        }
-                    }
-                    if(iseg->LeftFork()) {
-                        for(auto it = iseg->m_left_connections.begin(); it != iseg->m_left_connections.end(); ++it) {
-                            auto is = *it;
-                            if(is == iseg)     // self      
-                                continue;
-                            auto irc = is->m_right_connections;
-                            irc.sort([](const GFAIterator& a, const GFAIterator& b){ return &(*a) < &(*b); }); // compare physical pointers 
-                            for(auto jt = next(it); jt != iseg->m_left_connections.end(); ) {
-                                auto js = *jt++;
-                                if(js == iseg) // self      
-                                    continue;
-                                if(is->m_left_check != js->m_left_check) // mixed status
-                                    continue;
-                                if((is->m_copy_of != nullptr && is->m_copy_of == js->m_copy_of) || is->m_copy_of == &(*js) || js->m_copy_of == &(*is)) {  // copies of the same
-                                    auto jrc = js->m_right_connections;
-                                    jrc.sort([](const GFAIterator& a, const GFAIterator& b){ return &(*a) < &(*b); }); // compare physical pointers 
-                                    // only     if i and j connect back to the same segments    
-                                    if(irc != jrc)
-                                        continue;
+            stack<GFAIterator> segments;
+            segments.push(it);
+            branch.insert(it);
 
-                                    keep_doing = true;
-                                    --m_size;
-                                    js->m_marked_for_erase = true;
-                                    TransferLeftLinks(js, is);
-                                    RemoveLinksToSegment(js);
-                                    js->m_right_connections.clear();
-                                }
-                            }
-                        }
+            while(!segments.empty()) {
+                auto iseg = segments.top();
+                segments.pop();
+                for(auto cn : iseg->m_left_connections) {
+                    if(branch.insert(cn).second) {
+                        segments.push(cn);
+                        for(auto inl : cn->m_right_connections)
+                            inlets.insert(inl);                        
                     }
                 }
             }
+
+            for(auto inl : inlets) {
+                if(!branch.count(inl)) {
+                    branch.clear();
+                    return branch;
+                }
+            }
+
+            return branch;
+        }
+
+        GFAIteratorUSet RightBranchSegments(GFAIterator it) {
+            GFAIteratorUSet branch;
+            GFAIteratorUSet inlets;
+
+            stack<GFAIterator> segments;
+            segments.push(it);
+            branch.insert(it);
+
+            while(!segments.empty()) {
+                auto iseg = segments.top();
+                segments.pop();
+                for(auto cn : iseg->m_right_connections) {
+                    if(branch.insert(cn).second) {
+                        segments.push(cn);
+                        for(auto inl : cn->m_left_connections)
+                            inlets.insert(inl);                        
+                    }
+                }
+            }
+
+            for(auto inl : inlets) {
+                if(!branch.count(inl)) {
+                    branch.clear();
+                    return branch;
+                }
+            }
+
+            return branch;
         }
         
         bool RemoveHair(DBGraph& dbg_graph, double eps) {
             GenerateKmersAndScores(dbg_graph);
 
             bool deleted = false;
-            for(auto it_loop = begin(); it_loop != end(); ) {
-                auto it = it_loop++;
-                
-                if(it->m_left_connections.empty() && it->RightSingle() && it->m_right_connections.front()->LeftFork()) {
-                    size_t maxlkmer = 0;
-                    for(auto jt : it->m_right_connections.front()->m_left_connections)
-                        maxlkmer = max(maxlkmer, jt->m_left_kmer_count+jt->m_kmer_count);
-                    if(it->m_left_kmer_count+it->m_kmer_count < eps*maxlkmer) {
-                        RemoveSegment(it);
-                        deleted = true;
-                        continue;
+
+            for(auto iseg = begin(); iseg != end(); ++iseg) {
+                for(auto iloop = iseg->m_left_connections.begin(); iloop != iseg->m_left_connections.end(); ) {
+                    auto jseg = *iloop++;
+                    int jcount = jseg->m_kmer_count+jseg->m_left_kmer_count;
+                    if(eps*iseg->m_left_kmer_count > jcount) {
+                        auto branch = LeftBranchSegments(jseg);
+                        if(!branch.empty()) {
+                            deleted = true;
+                            if(jseg->RightFork()) {
+                                UnLinkSegments(jseg, iseg);
+                            } else {
+                                for(auto i : branch)
+                                    RemoveSegment(i);
+                            }
+                        }
                     }
-                }                
-                
-                if(it->m_right_connections.empty() && it->LeftSingle() && it->m_left_connections.front()->RightFork()) {
-                    size_t maxrkmer = 0;
-                    for(auto jt : it->m_left_connections.front()->m_right_connections)
-                        maxrkmer = max(maxrkmer, jt->m_right_kmer_count+jt->m_kmer_count);
-                    if(it->m_right_kmer_count+it->m_kmer_count < eps*maxrkmer) {
-                        RemoveSegment(it);
-                        deleted = true;
-                        continue;
+                }
+                for(auto iloop = iseg->m_right_connections.begin(); iloop != iseg->m_right_connections.end(); ) {
+                    auto jseg = *iloop++;
+                    int jcount = jseg->m_kmer_count+jseg->m_right_kmer_count;
+                    if(eps*iseg->m_right_kmer_count > jcount) {
+                        auto branch = RightBranchSegments(jseg);
+                        if(!branch.empty()) {
+                            deleted = true;
+                            if(jseg->LeftFork()) {
+                                UnLinkSegments(iseg, jseg);
+                            } else {
+                                for(auto i : branch)
+                                    RemoveSegment(i);
+                            }
+                        }
                     }
                 }
             }
@@ -1858,32 +2113,48 @@ namespace DeBruijn {
             m_size = m_max_num;
         }
 
-        void CalculateCoverageAndEnumerateSegments(const DBGraph& dbg_graph) {
-            for(auto& seg : *this) {
-                seg.m_left_kmer_count = 0;
-                seg.m_right_kmer_count = 0;
-            }            
+        void CalculateCoverageAndEnumerateSegments() {
+            stack<GFAIterator> current_lsegs;
+            stack<GFAIterator> current_rsegs;
+            for(auto iseg = begin(); iseg != end(); ++iseg) {
+                if(iseg->m_left_connections.empty())
+                    current_lsegs.push(iseg);
+                if(iseg->m_right_connections.empty())
+                    current_rsegs.push(iseg);
+                iseg->m_left_kmer_count = 0;                
+                iseg->m_right_kmer_count = 0;
+            }
 
-            bool keep_doing = true;
-            while(keep_doing) {
-                keep_doing = false;
-                for(auto& seg : *this) {
-                    size_t max_left = 0;
-                    for(auto& lc : seg.m_left_connections)
-                        max_left = max(max_left, lc->m_left_kmer_count+lc->m_kmer_count);                    
-                    if(max_left > seg.m_left_kmer_count) {
-                        seg.m_left_kmer_count = max_left;
-                        keep_doing = true;
+            while(!current_lsegs.empty()) {
+                stack<GFAIterator> next_step_segs;
+                while(!current_lsegs.empty()) {
+                    GFAIterator iseg = current_lsegs.top();
+                    current_lsegs.pop();
+                    for(auto jseg : iseg->m_right_connections) {
+                        size_t next_count = iseg->m_left_kmer_count+iseg->m_kmer_count;
+                        if(next_count > jseg->m_left_kmer_count) {
+                            jseg->m_left_kmer_count = next_count;
+                            next_step_segs.push(jseg);
+                        }
                     }
-                        
-                    size_t max_right = 0;
-                    for(auto& rc : seg.m_right_connections)
-                        max_right = max(max_right, rc->m_right_kmer_count+rc->m_kmer_count);                    
-                    if(max_right > seg.m_right_kmer_count) {
-                        seg.m_right_kmer_count = max_right;
-                        keep_doing = true;
+                }
+                std::swap(current_lsegs, next_step_segs);
+            }
+
+            while(!current_rsegs.empty()) {
+                stack<GFAIterator> next_step_segs;
+                while(!current_rsegs.empty()) {
+                    GFAIterator iseg = current_rsegs.top();
+                    current_rsegs.pop();
+                    for(auto jseg : iseg->m_left_connections) {
+                        size_t next_count = iseg->m_right_kmer_count+iseg->m_kmer_count;
+                        if(next_count > jseg->m_right_kmer_count) {
+                            jseg->m_right_kmer_count = next_count;
+                            next_step_segs.push(jseg);
+                        }
                     }
-                }                
+                }
+                std::swap(current_rsegs, next_step_segs);
             }
 
             EnumerateSegments();
@@ -1966,7 +2237,10 @@ namespace DeBruijn {
                 out << "S\t" << SegId(seg) << "\t";
                 for(auto& base : seg.m_seq)
                     out << base.m_nt;
-                out << "\tKC:i:" << seg.m_kmer_count << "\n";
+                double coverage = seg.m_kmer_count;
+                if(m_is_aa)
+                    coverage /= 3;
+                out << "\tKC:i:" << coverage << "\n";
             }
             for(auto& seg : *this) {
                 /*
@@ -1977,11 +2251,241 @@ namespace DeBruijn {
                     out << "L\t" << SegId(seg) << "\t+\t" << SegId(*rc) << "\t+\t0M" << "\n";                                    
             }
         }
+        void PrintAllVariants(ostream& out, unsigned max_variants) {
+            typedef tuple<size_t, int> TPathScore;
+            unordered_map<GFAIterator, set<TPathScore>, SGFAIteratorHash> seg_scores;
+            size_t max_stack = 2*max_variants; // give some extra in case of identical sequences
+
+            //propagate score from right to left
+            stack<GFAIterator> current_segs;
+            for(GFAIterator it = begin(); it != end(); ++it) {
+                if(it->m_right_connections.empty()) { // start from right extrems
+                    current_segs.push(it);
+                    TPathScore iscore(it->m_kmer_count, it->m_seq.size());
+                    seg_scores[it].insert(iscore);
+                }
+            }
+            while(!current_segs.empty()) {
+                stack<GFAIterator> next_step_segs;
+                while(!current_segs.empty()) {
+                    GFAIterator rseg = current_segs.top();
+                    current_segs.pop();
+                    auto& rscores = seg_scores[rseg];
+                    for(auto lseg : rseg->m_left_connections) {
+                        auto& lscores = seg_scores[lseg];
+                        auto lsize = lscores.size();
+                        TPathScore min_score;
+                        if(lsize > 0)
+                            min_score = *lscores.begin();
+                        for(auto s : rscores) 
+                            lscores.emplace(get<0>(s)+lseg->m_kmer_count, get<1>(s)+lseg->m_seq.size());
+                        while(lscores.size() > max_stack)
+                            lscores.erase(lscores.begin());
+                        if(lscores.size() > lsize || *lscores.begin() > min_score)
+                            next_step_segs.push(lseg);
+                    }
+                }
+                std::swap(current_segs, next_step_segs);
+            }
+
+            //find top left ends
+            map<TPathScore, list<GFAIterator>> ordered_lefts;
+            for(auto it = begin(); it != end(); ++it) {
+                if(it->m_left_connections.empty()) {
+                    for(auto s : seg_scores[it]) 
+                        ordered_lefts[s].push_back(it);
+                }
+            }
+            while(ordered_lefts.size() > max_stack)
+                ordered_lefts.erase(ordered_lefts.begin());
+
+            //output variants
+            stack<tuple<GFAIterator, TPathScore, GFAIterator>> remaining_segments;  // segment, currnet score, left connection
+            //max score on top
+            for(auto& sl : ordered_lefts) {
+                for(auto iseg : sl.second)
+                    remaining_segments.emplace(iseg, sl.first, end());
+            }
+
+            unsigned total = 0;
+            list<GFAIterator> path;
+            TPathScore path_score;
+            set<string> seqs;
+            while(!remaining_segments.empty() && total < max_variants) {
+                GFAIterator iseg = get<0>(remaining_segments.top());
+                TPathScore score = get<1>(remaining_segments.top());
+                GFAIterator lseg = get<2>(remaining_segments.top());
+                remaining_segments.pop();
+
+                while(!path.empty() && path.back() != lseg)
+                    path.pop_back();
+                path.push_back(iseg);
+                if(lseg == end())
+                    path_score = score;
+
+                if(iseg->m_right_connections.empty()) { // end
+                    string seq;
+                    for(auto i : path) {
+                        for(auto& base : i->m_seq)
+                            seq.push_back(base.m_nt);
+                    }
+                    if(seqs.insert(seq).second) {
+                        out << ">" << Target() << ":" << front().m_group << ":" << ++total << ":" << get<0>(path_score);
+                        for(auto i : path)
+                            out << " " << i->m_num;
+                        out << "\n" << seq << "\n";
+                    }
+                } else {                               // keep extending
+                    TPathScore remaining_score(get<0>(score)-iseg->m_kmer_count, get<1>(score)-iseg->m_seq.size());
+                    for(GFAIterator it : iseg->m_right_connections) {
+                        if(seg_scores[it].count(remaining_score))
+                            remaining_segments.emplace(it, remaining_score, iseg);
+                    }
+                }
+            }
+        }
+        void PrintAllTranslatedVariants(ostream& out, unsigned max_variants, GeneticCode& genetic_code) {
+            typedef tuple<size_t, int> TPathScore;
+            unordered_map<GFAIterator, set<TPathScore>, SGFAIteratorHash> seg_scores;
+            size_t max_stack = 2*max_variants; // give some extra in case of identical sequences
+
+            //propagate score from right to left
+            stack<GFAIterator> current_segs;
+            for(GFAIterator it = begin(); it != end(); ++it) {
+                if(it->m_right_connections.empty()) { // start from right extrems
+                    current_segs.push(it);
+                    TPathScore iscore(it->m_kmer_count, it->m_seq.size());
+                    seg_scores[it].insert(iscore);
+                }
+            }
+            while(!current_segs.empty()) {
+                stack<GFAIterator> next_step_segs;
+                while(!current_segs.empty()) {
+                    GFAIterator rseg = current_segs.top();
+                    current_segs.pop();
+                    auto& rscores = seg_scores[rseg];
+                    for(auto lseg : rseg->m_left_connections) {
+                        auto& lscores = seg_scores[lseg];
+                        auto lsize = lscores.size();
+                        TPathScore min_score;
+                        if(lsize > 0)
+                            min_score = *lscores.begin();
+                        for(auto s : rscores) 
+                            lscores.emplace(get<0>(s)+lseg->m_kmer_count, get<1>(s)+lseg->m_seq.size());
+                        while(lscores.size() > max_stack)
+                            lscores.erase(lscores.begin());
+                        if(lscores.size() > lsize || *lscores.begin() > min_score)
+                            next_step_segs.push(lseg);
+                    }
+                }
+                std::swap(current_segs, next_step_segs);
+            }
+
+            //find top left ends
+            map<TPathScore, list<GFAIterator>> ordered_lefts;
+            for(auto it = begin(); it != end(); ++it) {
+                if(it->m_left_connections.empty()) {
+                    for(auto s : seg_scores[it]) 
+                        ordered_lefts[s].push_back(it);
+                }
+            }
+            while(ordered_lefts.size() > max_variants)
+                ordered_lefts.erase(ordered_lefts.begin());
+
+            //output variants
+            stack<tuple<GFAIterator, TPathScore, GFAIterator>> remaining_segments;  // segment, currnet score, left connection
+            //max score on top
+            for(auto& sl : ordered_lefts) {
+                for(auto iseg : sl.second)
+                    remaining_segments.emplace(iseg, sl.first, end());
+            }
+
+            unsigned total = 0;
+            list<GFAIterator> path;
+            TPathScore path_score;
+            set<string> seqs;
+            while(!remaining_segments.empty() && total < max_variants) {
+                GFAIterator iseg = get<0>(remaining_segments.top());
+                TPathScore score = get<1>(remaining_segments.top());
+                GFAIterator lseg = get<2>(remaining_segments.top());
+                remaining_segments.pop();
+
+                while(!path.empty() && path.back() != lseg)
+                    path.pop_back();
+                path.push_back(iseg);
+                if(lseg == end())
+                    path_score = score;
+
+                if(iseg->m_right_connections.empty()) { // end
+                    string seq;
+                    for(auto i : path) {
+                        for(auto& base : i->m_seq)
+                            seq.push_back(base.m_nt);
+                    }
+                    seq = genetic_code.Translate(seq, false);
+                    if(seqs.insert(seq).second) {
+                        out << ">" << Target() << ":" << front().m_group << ":" << ++total << ":" << get<0>(path_score);
+                        for(auto i : path)
+                            out << " " << i->m_num;
+                        out << "\n" << seq << "\n";
+                    }
+                } else {                               // keep extending
+                    TPathScore remaining_score(get<0>(score)-iseg->m_kmer_count, get<1>(score)-iseg->m_seq.size());
+                    for(GFAIterator it : iseg->m_right_connections) {
+                        if(seg_scores[it].count(remaining_score))
+                            remaining_segments.emplace(it, remaining_score, iseg);
+                    }
+                }
+            }
+        }
+        void PrintSelectedVariants(ostream& out) {
+            typedef pair<GFAIterator, GFAIterator> TItP;
+            struct STwoGFAIteratorsHash { size_t operator()(const TItP& p) const { return SGFAIteratorHash()(p.first)^SGFAIteratorHash()(p.second); } };
+
+            map<string, tuple<int,int,size_t>> variants;
+            GFAIteratorUSet included_segments;
+
+            typedef tuple<size_t, int> TPathScore;
+            unordered_map<TItP, TPathScore, STwoGFAIteratorsHash> included_edges;
+
+            for(auto it = begin(); it != end(); ++it) {
+                if(included_segments.insert(it).second) {
+                    Path path = ExpandToMax(it);
+                    TPathScore score(it->m_left_kmer_count+it->m_kmer_count+it->m_right_kmer_count, it->m_left_len+it->m_seq.size()+it->m_right_len);
+                    variants[path.Sequence()] = make_tuple(it->m_num, it->m_num, get<0>(score));
+                    included_segments.insert(path.m_segments.begin(), path.m_segments.end());
+                    for(int i = 0; i < (int)path.m_segments.size()-1; ++i) {
+                        TItP edge(path.m_segments[i], path.m_segments[i+1]);
+                        included_edges[edge] = max(included_edges[edge], score);
+                    }
+                }
+            }
+
+            for(auto left = begin(); left != end(); ++left) {
+                for(auto right : left->m_right_connections) {
+                    TItP edge(left, right);
+                    TPathScore score(left->m_left_kmer_count+left->m_kmer_count+right->m_kmer_count+right->m_right_kmer_count,
+                                     left->m_left_len+left->m_seq.size()+right->m_seq.size()+right->m_right_len);
+                    if(included_edges[edge] < score) {
+                        included_edges[edge] = score;
+                        Path path = ExpandEdgeToMax(left, right);
+                        variants[path.Sequence()] = make_tuple(left->m_num, right->m_num, get<0>(score));
+                        for(int i = 0; i < (int)path.m_segments.size()-1; ++i) {
+                            TItP newedge(path.m_segments[i], path.m_segments[i+1]);
+                            included_edges[newedge] = max(included_edges[newedge], score);
+                        }
+                    }
+                }
+            }
+
+            for(auto& var : variants)
+                out <<  ">Contig_" << Target() << ":" << front().m_group << ":" << get<0>(var.second) << ":" << get<1>(var.second) << ":" << get<2>(var.second) << "\n" << var.first << "\n";
+        }
 
         const string& Target() const { return m_acc; }
         int KmerLen() const { return m_kmer_len; }
 
-        void FindConsensus(unordered_set<uint32_t>& target_words, int word_size) {
+        void ScoreGraph(unordered_set<uint32_t>& target_words, int word_size) {
             GFAIterator best = end();
             for(auto it = begin(); it != end(); ++it) {
                 if(it->m_left_connections.empty()) {
@@ -1990,10 +2494,10 @@ namespace DeBruijn {
                 }
             }
             auto path = ExpandToMax(best);
-            m_consensus = path.Sequence();
-        
-            for(int p = 0; p <= (int)m_consensus.size()-word_size; ++p) {
-                string seed = m_consensus.substr(p, word_size);
+            string consensus = path.Sequence();
+	        
+            for(int p = 0; p <= (int)consensus.size()-word_size; ++p) {
+                string seed = consensus.substr(p, word_size);
                 uint32_t word = 0;
                 for(char c : seed) {
                     word = word << 2;
@@ -2001,7 +2505,7 @@ namespace DeBruijn {
                 }
                 m_score += target_words.count(word);
             }                
-        }
+        }    
     };
 
 
@@ -2012,24 +2516,24 @@ namespace DeBruijn {
     private:
 
         set<Node> m_end_kmers;
-        DBGraph& m_graph;
-        GraphDigger m_graph_digger;
+        DBGraph* m_graphp;
+        double m_fraction;
 
     public:
-        Spider(const map<string, string>& contigs, DBGraph& graph, double fraction, const string& acc) : GFAGraph(acc, graph.KmerLen()), m_graph(graph), m_graph_digger(graph, fraction, 0, 0, false) {
-            int kmer_len = m_graph.KmerLen();
+        Spider(const map<string, string>& contigs, DBGraph& graph, double fraction, const string& acc) : GFAGraph(acc, graph.KmerLen()), m_graphp(&graph), m_fraction(fraction) {
+            int kmer_len = m_graphp->KmerLen();
             for(auto& contig : contigs) {
                 auto& seq = contig.second;
                 int len = seq.size();                
-                Node rnode = m_graph.GetNode(seq.substr(len-kmer_len));
+                Node rnode = m_graphp->GetNode(seq.substr(len-kmer_len));
                 if(rnode.isValid())
                     m_end_kmers.insert(rnode);
-                Node lnode = m_graph.GetNode(seq.substr(0, kmer_len));
+                Node lnode = m_graphp->GetNode(seq.substr(0, kmer_len));
                 if(lnode.isValid())
                     m_end_kmers.insert(lnode.ReverseComplement());                    
             }
         }
-        Spider(const list<Node>& lkmers, const list<Node>& rkmers, DBGraph& graph, double fraction, const string& acc) : GFAGraph(acc, graph.KmerLen()), m_graph(graph), m_graph_digger(graph, fraction, 0, 0, false) {
+        Spider(const list<Node>& lkmers, const list<Node>& rkmers, DBGraph& graph, double fraction, const string& acc) : GFAGraph(acc, graph.KmerLen()), m_graphp(&graph), m_fraction(fraction) {
             for(auto& kmer : rkmers) // right ends of contigs
                 m_end_kmers.insert(kmer);
             for(auto& kmer : lkmers) // left ends of contigs
@@ -2059,7 +2563,7 @@ namespace DeBruijn {
             }            
         }
         void UpdateEndKmers() {
-            int kmer_len = m_graph.KmerLen();
+            int kmer_len = m_graphp->KmerLen();
             for(auto segmi = begin(); segmi != end(); ++segmi) {
                 if(segmi->m_right_connections.empty()) {
                     int len = segmi->m_seq.size();
@@ -2068,7 +2572,7 @@ namespace DeBruijn {
                     list<Path> paths = Expand(segmi, len-1, kmer_len-1, 0);
                     for(auto& path : paths) {
                         if(path.Length() == kmer_len) {
-                            auto node = m_graph.GetNode(path.Sequence());
+                            auto node = m_graphp->GetNode(path.Sequence());
                             if(node.isValid() && find(rkmers.begin(), rkmers.end(), node) == rkmers.end())
                                 rkmers.push_front(node);
                         }
@@ -2080,7 +2584,7 @@ namespace DeBruijn {
                     list<Path> paths = Expand(segmi, 0, 0, kmer_len-1);
                     for(auto& path : paths) {
                         if(path.Length() == kmer_len) {
-                            auto node = m_graph.GetNode(path.Sequence());
+                            auto node = m_graphp->GetNode(path.Sequence());
                             if(node.isValid() && find(lkmers.begin(), lkmers.end(), node) == lkmers.end())
                                 lkmers.push_front(node);
                         }
@@ -2129,7 +2633,8 @@ namespace DeBruijn {
             unordered_map<Node, Position, typename Node::Hash> links; // p >= 0 position of RIGHT kmer end; p < 0 len-|p| is position of LEFT kmer end
             list<GFAIterator> active_segms;
 
-            string kmer = m_graph.GetNodeSeq(node);
+            string kmer = m_graphp->GetNodeSeq(node);
+            GraphDigger graph_digger(*m_graphp, m_fraction, 0, 0, false);
 
             emplace_front();
             begin()->m_num = ++m_max_num;
@@ -2143,7 +2648,7 @@ namespace DeBruijn {
 
             active_segms.push_front(begin());
             links[node] = Position(begin(), KmerLen()-1);
-            for(int i = 0; i < ext_len && OneRightStep(links, active_segms, node); ++i) {}
+            for(int i = 0; i < ext_len && OneRightStep(links, active_segms, node, graph_digger); ++i) {}
             
             //remove forks from start/end kmers
             for(auto iseg = begin(); iseg != end(); ++iseg) {
@@ -2210,7 +2715,7 @@ namespace DeBruijn {
             RemoveLooseEnds();
             // keep forks for cleaning           MergeForks(); 
             //there is only one group which will be 0            AssignGroupNumber();
-            GenerateKmers(m_graph);
+            GenerateKmers(*m_graphp);
         }
         void CalculateDistanceToStartingEnds() {
             for(auto& seg : *this) {
@@ -2280,7 +2785,6 @@ namespace DeBruijn {
                     segi->m_left_connections.clear();
                     segi->m_right_connections.clear();
                     segi->m_marked_for_erase = true;
-                    --m_size;
                 }
             }
         }
@@ -2305,12 +2809,12 @@ namespace DeBruijn {
             for(auto& segm : *this) {
                 if(segm.m_seq.front().m_nt == 0 && !segm.m_seq.front().m_left_kmers.empty()) { //empty check for 1bp segments
                     Node& node = segm.m_seq.front().m_left_kmers.front();
-                    string kmer = m_graph.GetNodeSeq(node);
+                    string kmer = m_graphp->GetNodeSeq(node);
                     segm.m_seq.front().m_nt = kmer.front();
                 }
                 if(segm.m_seq.back().m_nt == 0 && !segm.m_seq.back().m_right_kmers.empty()) { //empty check for 1bp segments
                     Node& node = segm.m_seq.back().m_right_kmers.front();
-                    string kmer = m_graph.GetNodeSeq(node);
+                    string kmer = m_graphp->GetNodeSeq(node);
                     segm.m_seq.back().m_nt = kmer.back();
                 }
             }            
@@ -2318,6 +2822,7 @@ namespace DeBruijn {
         bool RemoveHair(DBGraph& dbg_graph, double eps) { // Spider doesn't have loose ends
             return false;
         }
+        void RemoveRedundantPaths(size_t maxp) {}         // Spider doesn't have loose ends
         bool Absorb(Spider& other) {
             map<Node, GFAIterator> other_lends;
             map<Node, GFAIterator> other_rends;
@@ -2452,7 +2957,7 @@ namespace DeBruijn {
             while(!this->empty()) {
                 int group = this->front().m_group;
                 if(!group_to_graph.count(group)) {
-                    splitted.emplace_front(lkmers[group], rkmers[group], m_graph, m_graph_digger.Fraction(), Target());
+                    splitted.emplace_front(lkmers[group], rkmers[group], *m_graphp, m_fraction, Target());
                     group_to_graph[group] = splitted.begin();
                 }
                 auto& dest = *group_to_graph[group];
@@ -2474,7 +2979,7 @@ namespace DeBruijn {
         int Connections() const { return m_end_kmers.size(); }
         
     private:
-        bool OneRightStep(unordered_map<Node, Position, typename Node::Hash>& links, list<GFAIterator>& active_segms, const Node& initial_node) {
+        bool OneRightStep(unordered_map<Node, Position, typename Node::Hash>& links, list<GFAIterator>& active_segms, const Node& initial_node, GraphDigger& graph_digger) {
             if(active_segms.empty()) 
                 return false;
 
@@ -2483,7 +2988,7 @@ namespace DeBruijn {
                 auto iseg = i_loop++; // iterator to iterator
                 auto& segm = **iseg;
                 const Node& node = segm.m_seq.back().m_right_kmers.front();
-                auto successors = m_graph_digger.GetReversibleNodeSuccessors(node);
+                auto successors = graph_digger.GetReversibleNodeSuccessors(node);
 
                 if(successors.empty()) {
                     active_segms.erase(iseg);
@@ -2512,14 +3017,14 @@ namespace DeBruijn {
                 const Node& node = segm.m_seq.back().m_right_kmers.front();
                 auto revnode = node.ReverseComplement();
                 //left forks
-                if(m_graph_digger.GetReversibleNodeSuccessors(revnode).size() > 1) {
+                if(graph_digger.GetReversibleNodeSuccessors(revnode).size() > 1) {
                     int right_kmer_end = segm.m_seq.size()-1;
                     int left_kmer_end = right_kmer_end-KmerLen()+1;
                     if(left_kmer_end >= 0) {                          // still same segment
                         segm.m_seq[left_kmer_end].m_fork |= eLeftFork;
                     } else {                                          //short segment need to expand (multiple matches possible)
                         list<Path> paths = Expand(*iseg, right_kmer_end, KmerLen()-1, 0);
-                        string kmer = m_graph.GetNodeSeq(segm.m_seq.back().m_right_kmers.front());
+                        string kmer = m_graphp->GetNodeSeq(segm.m_seq.back().m_right_kmers.front());
                         for(auto& path : paths) {
                             if(path.Sequence() == kmer) {
                                 GFAIterator destp = path.m_segments.front();
@@ -2591,7 +3096,7 @@ namespace DeBruijn {
             Position pos(destp, left_kmer_end+KmerLen()-1);
             if(pos.m_pos >= (int)destp->m_seq.size()) { //short segment need to expand          
                 list<Path> paths = Expand(destp, left_kmer_end, 0, KmerLen()-1);
-                string kmer = m_graph.GetNodeSeq(node);
+                string kmer = m_graphp->GetNodeSeq(node);
                 for(auto& path : paths) {
                     if(path.Sequence() == kmer) {
                         pos.m_segmp = path.m_segments.back();
@@ -2609,7 +3114,7 @@ namespace DeBruijn {
             Position pos(destp, left_kmer_end-(int)destp->m_seq.size());
             if(left_kmer_end < 0) {  //short segment need to expand
                 list<Path> paths = Expand(destp, right_kmer_end, KmerLen()-1, 0);
-                string kmer = m_graph.GetNodeSeq(node);
+                string kmer = m_graphp->GetNodeSeq(node);
                 for(auto& path : paths) {
                     if(path.Sequence() == kmer) {
                         pos.m_segmp = path.m_segments.front();
@@ -2842,7 +3347,9 @@ namespace DeBruijn {
     template<class Collection>
     class GraphCleaner {
     private:
+        typedef typename Collection::value_type Graph;
         Collection& m_gfa_collection;
+        TTargets* m_targetsp;
         DBGraph& m_graph;
         int m_kmer_len;
         double m_fraction;
@@ -2878,9 +3385,9 @@ namespace DeBruijn {
         mutex m_out_mutex;
         
     public:
-        GraphCleaner(Collection& gfa_collection, DBGraph& graph, double fraction, double entropy_level, int not_aligned_len, int not_aligned_count, int aligned_count, int maxp, 
+        GraphCleaner(Collection& gfa_collection, TTargets* targetsp, DBGraph& graph, double fraction, double entropy_level, int not_aligned_len, int not_aligned_count, int aligned_count, int maxp, 
                      bool no_reads, bool no_pairs, list<array<CReadHolder,2>>& raw_reads, int ncores) : 
-            m_gfa_collection(gfa_collection), m_graph(graph), m_kmer_len(graph.KmerLen()), m_fraction(fraction), m_graph_digger(graph, fraction, 0, 0, false), m_raw_reads(raw_reads), 
+            m_gfa_collection(gfa_collection), m_targetsp(targetsp), m_graph(graph), m_kmer_len(graph.KmerLen()), m_fraction(fraction), m_graph_digger(graph, fraction, 0, 0, false), m_raw_reads(raw_reads), 
             m_entropy_level(entropy_level), m_no_reads(no_reads), m_no_pairs(no_pairs), 
             m_not_aligned_len(not_aligned_len), m_not_aligned_count(not_aligned_count), m_aligned_count(aligned_count), m_maxp(maxp), m_ncores(ncores) {
 
@@ -3214,6 +3721,30 @@ namespace DeBruijn {
         pair<EReadSupport, int> LengthSupportedByReads(Path& path, bool toright) {
  
             int slen = path.Length();
+           
+            map<int, tuple<int, int>> counts; // length before fork, count for aligned, count for not aligned  
+            if(toright) {
+                int len = path.m_segments.front()->m_seq.size()-path.m_left;
+                counts.emplace(len, make_tuple(0, 0));
+                for(int i = 1; i < (int)path.m_segments.size()-1; ++i) {
+                    auto& s = path.m_segments[i]->m_seq; 
+                    len += s.size();
+                    if(s.back().m_fork&eRightFork)
+                        counts.emplace(len, make_tuple(0, 0));
+                }
+            } else {
+                int len = path.m_right+1;
+                counts.emplace(len, make_tuple(0, 0));
+                for(int i = (int)path.m_segments.size()-2; i > 0; --i) {
+                    auto& s = path.m_segments[i]->m_seq;
+                    len += s.size();
+                    if(s.front().m_fork&eLeftFork)
+                        counts.emplace(len, make_tuple(0, 0));
+                }
+            }
+            if(counts.size() < 2)
+                return make_pair(eSupported, slen);
+
             string seq = path.Sequence();
             CReadHolder rh(false);
             rh.PushBack(seq);
@@ -3255,17 +3786,6 @@ namespace DeBruijn {
                     int possible_extend = rlen-rpos-shift;
                     hitsp.emplace_back(possible_extend, index);
                 }
-            }
-           
-            map<int, tuple<int, int>> counts; // length before fork, count for aligned, count for not aligned  
-            if(toright) {
-                counts.emplace(path.m_segments.front()->m_seq.size()-path.m_left, make_tuple(0, 0));
-                for(int i = 1; i < (int)path.m_segments.size()-1; ++i)
-                    counts.emplace(counts.rbegin()->first+path.m_segments[i]->m_seq.size(), make_tuple(0, 0));
-            } else {
-                counts.emplace(path.m_right+1, make_tuple(0, 0));
-                for(int i = (int)path.m_segments.size()-2; i > 0; --i)
-                    counts.emplace(counts.rbegin()->first+path.m_segments[i]->m_seq.size(), make_tuple(0, 0));
             }
 
             int chunk_for_sort = 25;
@@ -3321,8 +3841,32 @@ namespace DeBruijn {
 
             return make_pair(eLowCoverage, counts.begin()->first);
         }
-        pair<EReadSupport, int> LengthSupportedByPairs(Path& path, GFAGraph& gfa_graph, bool toright) {
+        pair<EReadSupport, int> LengthSupportedByPairs(Path& path, Graph& gfa_graph, bool toright) {
             int slen = path.Length();
+           
+            map<int, tuple<int, int>> counts; // length before fork, count for aligned, count for not aligned  
+            if(toright) {
+                int len = path.m_segments.front()->m_seq.size()-path.m_left;
+                counts.emplace(len, make_tuple(0, 0));
+                for(int i = 1; i < (int)path.m_segments.size()-1; ++i) {
+                    auto& s = path.m_segments[i]->m_seq; 
+                    len += s.size();
+                    if(s.back().m_fork&eRightFork)
+                        counts.emplace(len, make_tuple(0, 0));
+                }
+            } else {
+                int len = path.m_right+1;
+                counts.emplace(len, make_tuple(0, 0));
+                for(int i = (int)path.m_segments.size()-2; i > 0; --i) {
+                    auto& s = path.m_segments[i]->m_seq;
+                    len += s.size();
+                    if(s.front().m_fork&eLeftFork)
+                        counts.emplace(len, make_tuple(0, 0));
+                }
+            }
+            if(counts.size() < 2)
+                return make_pair(eSupported, slen);
+
             string seq = path.Sequence();
             CReadHolder rh(false);
             rh.PushBack(path.Sequence());
@@ -3425,18 +3969,7 @@ namespace DeBruijn {
                         hitsp.emplace_back(extend, rpos, false, index);
                 }        
             }
-            
-            map<int, tuple<int, int>> counts; // length before fork, count for aligned, count for not aligned  
-            if(toright) {
-                counts.emplace(path.m_segments[0]->m_seq.size()-path.m_left, make_tuple(0, 0));
-                for(int i = 1; i < (int)path.m_segments.size()-1; ++i)
-                    counts.emplace(counts.rbegin()->first+path.m_segments[i]->m_seq.size(), make_tuple(0, 0));
-            } else {
-                counts.emplace(path.m_right+1, make_tuple(0, 0));
-                for(int i = (int)path.m_segments.size()-2; i > 0; --i)
-                    counts.emplace(counts.rbegin()->first+path.m_segments[i]->m_seq.size(), make_tuple(0, 0));
-            }
-               
+                
             int chunk_for_sort = 25;
             auto sorted_so_far = hitsp.begin();
             for(auto it = hitsp.begin(); it != hitsp.end(); ++it) {
@@ -3549,47 +4082,8 @@ namespace DeBruijn {
             
             EnumerateCollection(m_gfa_collection);
         }
-        void RecalculateCopyInfo(TCopyInfo& copies, const unordered_set<GFAIterator, SGFAIteratorHash>& erased) {
-            for(auto icopy = copies.begin(); icopy != copies.end(); ) {
-                auto& checked = get<0>(icopy->second);
-                auto& not_checked = get<1>(icopy->second);
-                checked.erase(remove_if(checked.begin(), checked.end(), [&](GFAIterator p) { return erased.count(p); }), checked.end());                  // remove erased from list
-                not_checked.erase(remove_if(not_checked.begin(), not_checked.end(), [&](GFAIterator p) { return erased.count(p); }), not_checked.end());  // remove erased from list
-                if(checked.empty() && not_checked.empty()) {      // remove empty entry
-                    icopy = copies.erase(icopy); 
-                } else if(erased.count(icopy->first)) {           // remove erased from keys 
-                    GFAIterator firstp;
-                    if(checked.empty()) {
-                        firstp = not_checked.front();
-                        not_checked.pop_front();
-                    } else {
-                        firstp = checked.front();
-                        checked.pop_front();
-                    }
-                    firstp->m_copy_of = nullptr;
-                    for(GFAIterator p : checked) {
-                        p->m_copy_of = &(*firstp);
-                        p->m_copy_ofi = firstp;
-                    }
-                    for(GFAIterator p : not_checked) {
-                        p->m_copy_of = &(*firstp);
-                        p->m_copy_ofi = firstp;
-                    }
-                    if(!checked.empty() || !not_checked.empty()) {
-                        if(copies.size() == copies.max_load_factor()*copies.bucket_count())
-                            throw runtime_error("Unexpected rehash");
-                        auto& rslt = copies[firstp];
-                        get<0>(rslt).splice(get<0>(rslt).end(), checked);
-                        get<1>(rslt).splice(get<1>(rslt).end(), not_checked);
-                    }
-                    icopy = copies.erase(icopy);
-                } else {
-                    ++icopy;
-                }
-            }
-        }
         void AlignReadsJob(Collection& rslts) { 
-            size_t cutoff_for_break = 100;
+            size_t cutoff_for_break = 15;
 
             for(auto& gfa_graph : m_gfa_collection) {
                 if(!gfa_graph.Sentinel().Set(1, 0))
@@ -3599,6 +4093,9 @@ namespace DeBruijn {
                 timer.Restart();
                 auto& acc = gfa_graph.Target();
                 int group = gfa_graph.front().m_group;
+                int min_len = 0;
+                if(m_targetsp != nullptr)
+                    min_len = get<1>((*m_targetsp)[acc]);
             
                 for(auto it = gfa_graph.begin(); it != gfa_graph.end(); ++it) {
                     auto& seg = *it;
@@ -3661,12 +4158,15 @@ namespace DeBruijn {
                                 for(int j = 1; j < (int)pathp->m_segments.size()-1 && simple_chain; ++j)
                                     simple_chain = (pathp->m_segments[j]->LeftConnectionsNum() == 1);
                                 if(simple_chain) {
-                                    for(int j = 1; j < (int)pathp->m_segments.size()-1; ++j) {
-                                        auto jsegp = pathp->m_segments[j];
-                                        gfa_graph.RemoveSegment(jsegp);
+                                    if(pathp->m_segments.size() > 2) {
+                                        for(int j = 1; j < (int)pathp->m_segments.size()-1; ++j) {
+                                            auto jsegp = pathp->m_segments[j];
+                                            gfa_graph.RemoveSegment(jsegp);
+                                        }
+                                    } else {
+                                        pathp->m_segments.front()->m_right_connections.remove(pathp->m_segments.back());
+                                        pathp->m_segments.back()->m_left_connections.remove(pathp->m_segments.front());
                                     }
-                                    pathp->m_segments.front()->m_right_connections.remove(pathp->m_segments.back());
-                                    pathp->m_segments.back()->m_left_connections.remove(pathp->m_segments.front());
                                 }
                             } 
                         }
@@ -3728,12 +4228,15 @@ namespace DeBruijn {
                                 for(int j = 1; j < (int)pathp->m_segments.size()-1 && simple_chain; ++j)
                                     simple_chain = (pathp->m_segments[j]->RightConnectionsNum() == 1);
                                 if(simple_chain) {
-                                    for(int j = 1; j < (int)pathp->m_segments.size()-1; ++j) {
-                                        auto jsegp = pathp->m_segments[j];
-                                        gfa_graph.RemoveSegment(jsegp);
-                                    }                            
-                                    pathp->m_segments.front()->m_right_connections.remove(pathp->m_segments.back());
-                                    pathp->m_segments.back()->m_left_connections.remove(pathp->m_segments.front());
+                                    if(pathp->m_segments.size() > 2) {
+                                        for(int j = 1; j < (int)pathp->m_segments.size()-1; ++j) {
+                                            auto jsegp = pathp->m_segments[j];
+                                            gfa_graph.RemoveSegment(jsegp);
+                                        }           
+                                    } else {
+                                        pathp->m_segments.front()->m_right_connections.remove(pathp->m_segments.back());
+                                        pathp->m_segments.back()->m_left_connections.remove(pathp->m_segments.front());
+                                    }
                                 }
                             } 
                         }
@@ -3741,6 +4244,7 @@ namespace DeBruijn {
                 } 
 
                 gfa_graph.CutToChunks();
+                Graph graph_copy(gfa_graph);
                 size_t initial_gsize = gfa_graph.Size();
                 size_t last_gsize = initial_gsize;
                 TCopyInfo copies;  // get<0> - not checked, get<1> - checked    
@@ -3752,28 +4256,41 @@ namespace DeBruijn {
 
                 bool interrupted = false;
                 if(!m_no_reads) {
-                    for(auto it = gfa_graph.begin(); it != gfa_graph.end(); ++it) {
-                        if(it->m_left_check && it->m_right_check)
+                    for(auto it = gfa_graph.begin(); it != gfa_graph.end(); ) {
+                        if((it->m_left_check && it->m_right_check) || it->m_marked_for_erase) {
+                            ++it;
                             continue;
+                        }
 
                         list<GFAIterator> segments;
                         tuple<list<GFAIterator>,list<GFAIterator>>* copyp = nullptr;
+                        auto copy_ofi = gfa_graph.end();
                         if(it->m_copy_of != nullptr) {
+                            copy_ofi = it->m_copy_ofi;
                             copyp = &copies[it->m_copy_ofi];
+                        } else if(copies.count(it)) {
+                            copy_ofi = it;
+                            copyp = &copies[it];
+                        }
+                        if(copyp != nullptr) {
                             segments.splice(segments.end(), get<0>(*copyp));
+                            segments.push_front(copy_ofi);
                         } else {
                             segments.push_back(it);
                         }
 
                         for(int toright = 0; toright < 2; ++toright) {
-                            unordered_set<Path, Path::Hash> accepted_paths;           // supported or low coverage  
+                            unordered_set<Path, Path::Hash> accepted_paths;           // supported or low coverage      
                             unordered_map<Path, int, Path::Hash> not_supported_paths;
                             for(GFAIterator segp : segments) {                            
                                 GFASegment& seg = *segp;
+                                if(seg.m_marked_for_erase)
+                                    continue;
                                 bool& check = toright ? seg.m_right_check : seg.m_left_check;
-                                auto& connections = toright ? seg.m_right_connections : seg.m_left_connections;
-                                if(connections.empty())
-                                    check = true;
+                                if(toright)
+                                    check = !(seg.m_seq.back().m_fork&eLeftBranch);
+                                else
+                                    check = !(seg.m_seq.front().m_fork&eRightBranch);
 
                                 while(!check) {
                                     check = true;
@@ -3797,10 +4314,11 @@ namespace DeBruijn {
                                             if(rslt.first == eNotSupported) {
                                                 max_extend = rslt.second;
                                                 not_supported_paths[path] = max_extend;
-                                             } else {
+                                            } else {
                                                 accepted_paths.insert(path);
                                             }
                                         }
+
                                         if(max_extend >= 0) {
                                             int clip = path_len-max_extend-1;
                                             if(clip > 0) {
@@ -3814,16 +4332,20 @@ namespace DeBruijn {
                                         }
                                     }
                                 }
-                                if(gfa_graph.Size() > 2*last_gsize) {
-                                    gfa_graph.MergeRedundantDuplicates();
-                                    last_gsize = gfa_graph.Size();
-                                }
                             }
                         }
 
+                        ++it;    //cleaning loop inserts segments at the list end
+
                         if(copyp != nullptr) {
+                            segments.pop_front();
                             auto& checked = get<1>(*copyp);
                             checked.splice(checked.end(), segments);
+                        }
+
+                        if(gfa_graph.Size() > 2*last_gsize) {
+                            it = gfa_graph.ReduceGraph(min_len, copies, it);
+                            last_gsize = gfa_graph.Size();
                         }
 
                         if(gfa_graph.Size() > cutoff_for_break*initial_gsize) {
@@ -3832,18 +4354,16 @@ namespace DeBruijn {
                             cerr << "Interrupted graphA: " << acc << ":" << group << " " << gfa_graph.Size() << endl;
                             break;
                         }
-                    }                    
-                    unordered_set<GFAIterator, SGFAIteratorHash> erased;
-                    for(auto iseg = gfa_graph.begin(); iseg != gfa_graph.end(); ++iseg) {
-                        if(iseg->m_marked_for_erase)
-                            erased.insert(iseg);
                     }
-                    RecalculateCopyInfo(copies, erased);
-                    for(auto iseg : erased)
-                        gfa_graph.erase(iseg); //already counted in m_size
+                    gfa_graph.ReduceGraph(min_len, copies, gfa_graph.end());
+                    last_gsize = gfa_graph.Size();
                 }
 
-                if(!m_no_pairs && m_insert_length > 0 && !interrupted) {                                                                    
+                if(interrupted) {
+                    gfa_graph = graph_copy;
+                } else if(!m_no_pairs && m_insert_length > 0) {
+                    graph_copy = gfa_graph;
+                                                                    
                     for(auto& seg : gfa_graph) {
                         seg.m_right_check = false;
                         seg.m_left_check = false;
@@ -3851,29 +4371,42 @@ namespace DeBruijn {
                     for(auto& copy : copies) 
                         get<0>(copy.second).splice(get<0>(copy.second).end(), get<1>(copy.second));
 
-                    for(auto it = gfa_graph.begin(); it != gfa_graph.end(); ++it) {
-                        if(it->m_left_check && it->m_right_check)
+                    for(auto it = gfa_graph.begin(); it != gfa_graph.end(); ) {
+                        if((it->m_left_check && it->m_right_check) || it->m_marked_for_erase) {
+                            ++it;
                             continue;
+                        }
 
                         list<GFAIterator> segments;
                         tuple<list<GFAIterator>,list<GFAIterator>>* copyp = nullptr;
+                        auto copy_ofi = gfa_graph.end();
                         if(it->m_copy_of != nullptr) {
+                            copy_ofi = it->m_copy_ofi;
                             copyp = &copies[it->m_copy_ofi];
+                        } else if(copies.count(it)) {
+                            copy_ofi = it;
+                            copyp = &copies[it];
+                        }
+                        if(copyp != nullptr) {
                             segments.splice(segments.end(), get<0>(*copyp));
+                            segments.push_front(copy_ofi);
                         } else {
                             segments.push_back(it);
                         }
 
                         for(int toright = 0; toright < 2; ++toright) {
-                            unordered_set<Path, Path::Hash> accepted_paths;           // supported or low coverage  
+                            unordered_set<Path, Path::Hash> accepted_paths;           // supported or low coverage      
                             unordered_map<Path, int, Path::Hash> not_supported_paths;
                             for(GFAIterator segp : segments) {                            
                                 GFASegment& seg = *segp;
+                                if(seg.m_marked_for_erase)
+                                    continue;
                                 bool& check = toright ? seg.m_right_check : seg.m_left_check;
-                                auto& connections = toright ? seg.m_right_connections : seg.m_left_connections;
-                                if(connections.empty())
-                                    check = true;
-
+                                if(toright)
+                                    check = !(seg.m_seq.back().m_fork&eLeftBranch);
+                                else
+                                    check = !(seg.m_seq.front().m_fork&eRightBranch);
+                                
                                 int extend = m_insert_max;
                                 while(!check) {
                                     check = true;
@@ -3914,46 +4447,47 @@ namespace DeBruijn {
                                         }
                                     }
                                 }
-                                if(gfa_graph.Size() > 2*last_gsize) {
-                                    gfa_graph.MergeRedundantDuplicates();
-                                    last_gsize = gfa_graph.Size();
-                                }
-                             }
+                            }
                         }
 
+                        ++it;    //cleaning loop inserts segments at the list end
+
                         if(copyp != nullptr) {
+                            segments.pop_front();
                             auto& checked = get<1>(*copyp);
                             checked.splice(checked.end(), segments);
                         }
 
+                        if(gfa_graph.Size() > 2*last_gsize) {
+                            it = gfa_graph.ReduceGraph(min_len, copies, it);
+                            last_gsize = gfa_graph.Size();
+                        }
+                        
                         if(gfa_graph.Size() > cutoff_for_break*initial_gsize) {
                             lock_guard<mutex> guard(m_out_mutex);
                             cerr << "Interrupted graphB: " << acc << ":" << group << " " << gfa_graph.Size() << endl;
+                            swap(gfa_graph, graph_copy);
                             break;
                         }
                     }
-                    unordered_set<GFAIterator, SGFAIteratorHash> erased;
-                    for(auto iseg = gfa_graph.begin(); iseg != gfa_graph.end(); ++iseg) {
-                        if(iseg->m_marked_for_erase)
-                            erased.insert(iseg);
-                    }
-                    RecalculateCopyInfo(copies, erased);
-                    for(auto iseg : erased)
-                        gfa_graph.erase(iseg); //already counted in m_size
-                }            
+                    gfa_graph.ReduceGraph(min_len, copies, gfa_graph.end());
+                }
+
+                gfa_graph.RemoveRedundantPaths(m_maxp);
  
-                // m_copy_of is not valid after this
-                gfa_graph.MergeForks(); 
-                if(gfa_graph.RemoveHair(m_graph, m_fraction))
-                    gfa_graph.MergeForks(); 
-                gfa_graph.AssignGroupNumber(); 
                 size_t gsize = gfa_graph.Size();
+                gfa_graph.MergeForks();                       // m_copy_of is not valid after this
+                /*
+                if(gfa_graph.RemoveHair(m_graph, m_fraction))
+                    gfa_graph.MergeForks();
+                */
+                gfa_graph.AssignGroupNumber(); 
                 Collection splitted = gfa_graph.SplitGroups();
                 size_t graphs = splitted.size();
                 rslts.splice(rslts.end(), splitted);
                 
                 lock_guard<mutex> guard(m_out_mutex);
-                cerr << "Finished graph: " << acc << ":" << group << " " << gsize << " " << graphs << " in " << timer.Elapsed();
+                cerr << "Finished graph: " << acc << ":" << group << " " << gsize << " " << double(gsize)/initial_gsize << " " << graphs << " in " << timer.Elapsed();
             }
         }
         

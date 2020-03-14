@@ -131,7 +131,7 @@ int main(int argc, const char* argv[])
         if(argm.count("version")) {
             cout << "gfa_connector 1.1.0" << endl;
 #ifdef SVN_REV
-            cout << "SVN revision:" << SVN_REV << endl << endl;
+            cout << "SVN revision:" << SVN_REV << endl;
 #endif
             return 0;
         }
@@ -370,7 +370,7 @@ int main(int argc, const char* argv[])
         cerr << "Assembling in " << timer.Elapsed();
         timer.Restart(); 
                  
-        GraphCleaner<TSpiderCollection> cleaner(spiders, *graphp, fraction, entropy_level, not_aligned_len, not_aligned_count, aligned_count, maxp, no_reads, no_pairs, reads, ncores);
+        GraphCleaner<TSpiderCollection> cleaner(spiders, nullptr, *graphp, fraction, entropy_level, not_aligned_len, not_aligned_count, aligned_count, maxp, no_reads, no_pairs, reads, ncores);
 
         {
             TSpiderCollection cleaned;
