@@ -13,8 +13,8 @@ Alexandre Souvorov, Richa Agarwala and David J. Lipman.
 ## Contents
 - [Compilation](#compilation)
 - [SKESA - Strategic K-mer Extension for Scrupulous Assemblies](#skesa---strategic-k-mer-extension-for-scrupulous-assemblies)
-- [GFA_connector - create GFA graph strating from a set of contigs](gfaconnector---create-gfa-graph-strating-from-a-set-of-contigs)
-- [Kmercounter - effectively count k-mers in a read set](kmercounter---effectively-count-k-mers-in-a-read-set)
+- [GFA_connector - create GFA graph starting from a set of contigs](#gfaconnector---create-gfa-graph-starting-from-a-set-of-contigs)
+- [Kmercounter - effectively count k-mers in a read set](#kmercounter---effectively-count-k-mers-in-a-read-set)
 
 ## Compilation
 
@@ -178,7 +178,7 @@ of reads but may give very small differences if read order is changed and insert
 
        $ skesa --sra_run SRR1695624 --sra_run SRR1745628 --cores 4 --memory 48 > SAMN03218571.skesa.fa
 
-# GFA_connector - create GFA graph strating from a set of contigs
+# GFA_connector - create GFA graph starting from a set of contigs
 Version 1.1.0
 ## Synopsis
     Running
