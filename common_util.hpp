@@ -641,5 +641,5 @@ namespace DeBruijn {
     template <typename V>
     using  TKmerMap = CKmerMap<V>; // for compatibility with previous code
 
-}; // namespace
+} // namespace
 #endif /* _common_util_ */

@@ -34,7 +34,7 @@ using namespace std;
 namespace DeBruijn {
 
 
-void CCigar::PushFront(const SElement& el) {
+void CCigarBase::PushFront(const SElement& el) {
     if(el.m_type == 'M') {
         m_qfrom -= el.m_len;
         m_sfrom -= el.m_len;
@@ -49,13 +49,13 @@ void CCigar::PushFront(const SElement& el) {
         m_elements.front().m_len += el.m_len;
 }
 
-void CCigar::PushFront(const CCigar other_cigar) {
+void CCigarBase::PushFront(const CCigarBase& other_cigar) {
     for(auto it = other_cigar.m_elements.rbegin(); it != other_cigar.m_elements.rend(); ++it)
         PushFront(*it);
 }
 
 
-void CCigar::PushBack(const SElement& el) {
+void CCigarBase::PushBack(const SElement& el) {
     if(el.m_type == 'M') {
         m_qto += el.m_len;
         m_sto += el.m_len;
@@ -70,7 +70,7 @@ void CCigar::PushBack(const SElement& el) {
         m_elements.back().m_len += el.m_len;
 }
 
-string CCigar::CigarString(int qstart, int qlen) const {
+string CCigarBase::CigarString(int qstart, int qlen) const {
     string cigar;
     for(auto& element :  m_elements)
         cigar += to_string(element.m_len)+element.m_type;
@@ -126,7 +126,7 @@ string CCigar::DetailedCigarString(int qstart, int qlen, const  char* query, con
     return cigar;
 }
 
-string CCigar::BtopString(int qstart, int qlen, const  char* query, const  char* subject) const {
+string CCigar::BtopString(const  char* query, const  char* subject) const {
     string btop;
     query += m_qfrom;
     subject += m_sfrom;
@@ -259,23 +259,37 @@ int CCigar::Score(const  char* query, const  char* subject, int gopen, int gapex
     return score;
 }
 
-enum{Agap = 1, Bgap = 2, Astart = 4, Bstart = 8, Zero = 16};
+void CCigar::PrintAlign(const  char* query, const  char* subject, const char delta[256][256], ostream& os) const {
+    TCharAlign align = ToAlign(query, subject);
+    os << align.first << "\n";        
+    for(unsigned p = 0; p < align.first.size(); ++p) {
+        for( ; align.first[p] == '-' || align.second[p] == '-'; ++p) 
+            os << " ";
+        if(align.first[p] == align.second[p])
+            os << "|";
+        else if(delta[(int)align.first[p]][(int)align.second[p]] > 0)
+            os << "+";
+        else
+            os << " ";
+    }
+    os << "\n" << align.second << "\n";
+}
 
 CCigar BackTrack(int ia, int ib, char* m, int nb) {
     CCigar track(ia, ib);
-    while((ia >= 0 || ib >= 0) && !(*m&Zero)) {
-        if(*m&Agap) {
+    while((ia >= 0 || ib >= 0) && !(*m&CCigar::Zero)) {
+        if(*m&CCigar::Agap) {
             int len = 1;
-            while(!(*m&Astart)) {
+            while(!(*m&CCigar::Astart)) {
                 ++len;
                 --m;
             }
             --m;
             ib -= len;
             track.PushFront(CCigar::SElement(len,'D'));
-        } else if(*m&Bgap) {
+        } else if(*m&CCigar::Bgap) {
             int len = 1;
-            while(!(*m&Bstart)) {
+            while(!(*m&CCigar::Bstart)) {
                 ++len;
                 m -= nb+1;
             }
@@ -295,19 +309,19 @@ CCigar BackTrack(int ia, int ib, char* m, int nb) {
 
 CCigar BackTrackBand(int ia, int ib, char* m, int band) {
     CCigar track(ia, ib);
-    while((ia >= 0 || ib >= 0) && !(*m&Zero)) {
-        if(*m&Agap) {
+    while((ia >= 0 || ib >= 0) && !(*m&CCigar::Zero)) {
+        if(*m&CCigar::Agap) {
             int len = 1;
-            while(!(*m&Astart)) {
+            while(!(*m&CCigar::Astart)) {
                 ++len;
                 --m;
             }
             --m;
             ib -= len;
             track.PushFront(CCigar::SElement(len,'D'));
-        } else if(*m&Bgap) {
+        } else if(*m&CCigar::Bgap) {
             int len = 1;
-            while(!(*m&Bstart)) {
+            while(!(*m&CCigar::Bstart)) {
                 ++len;
                 m -= band+1;
             }
@@ -324,28 +338,6 @@ CCigar BackTrackBand(int ia, int ib, char* m, int band) {
 
     return track;
 }
-
-class CScore {
-public:
-    // we keep score and tiebreaker in int64 integer
-    //!!!!!!!! tiebreaker must be >= 0 or it will spill into the score part !!!!!!!!!!
-    CScore() : m_score(0) {}
-    CScore(int32_t score, int32_t breaker) : m_score((int64_t(score) << 32) + breaker) {}
-    bool operator>(const CScore& other) const { return m_score > other.m_score; }
-    bool operator>=(const CScore& other) const { return m_score >= other.m_score; }
-    CScore  operator+(const CScore& other) const { 
-        return CScore(m_score+other.m_score); 
-    }
-    CScore& operator+=(const CScore& other) {
-        m_score += other.m_score;
-        return *this;
-    }
-    int32_t Score() const { return (m_score >> 32); }
-    
-private:
-    CScore(int64_t score) : m_score(score) {}
-    int64_t m_score;
-};
 
 struct SRawMemory {
     SRawMemory(size_t na, size_t nb) {
@@ -397,15 +389,15 @@ CCigar GlbAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
         gapb[i] = bignegative;
 	
     mtrx[0] = 0;
-    for(int i = 1; i <= nb; ++i) {  // ---------------
-        mtrx[i] = Agap;             // BBBBBBBBBBBBBBB
+    for(int i = 1; i <= nb; ++i) {          // ---------------
+        mtrx[i] = CCigar::Agap;             // BBBBBBBBBBBBBBB
     }
-    mtrx[1] |= Astart;
+    mtrx[1] |= CCigar::Astart;
 	
     char* m = mtrx+nb;
 	for(int i = 0; i < na; ++i) {
-		*(++m) = Bstart|Bgap;       //AAAAAAAAAAAAAAA
-                                    //---------------
+		*(++m) = CCigar::Bstart|CCigar::Bgap;       //AAAAAAAAAAAAAAA
+                                                    //---------------
         CScore gapa = bignegative;
 		int ai = a[i];
         const char* matrix = delta[ai];
@@ -417,14 +409,14 @@ CCigar GlbAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
             gapa += CScore(-sigma, 0);  // gapa extension
 			if(*sp+rsa > gapa) {        // for j == 0 this will open   AAAAAAAAAAA-  which could be used if mismatch is very expensive
 				gapa = *sp+rsa;         //                             -----------B
-				*m |= Astart;
+				*m |= CCigar::Astart;
 			}
 			
 			CScore& gapbj = gapb[++j];
 			gapbj += CScore(-sigma, 1); // gapb extension
 			if(sm[j]+rsb > gapbj) {     // for i == 0 this will open  BBBBBBBBBBB- which could be used if mismatch is very expensive
 				gapbj = sm[j]+rsb;      //                            -----------A
-				*m |= Bstart;
+				*m |= CCigar::Bstart;
 			}
 			 
 			if(gapa > gapbj) {
@@ -432,14 +424,14 @@ CCigar GlbAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
 					*(++sp) = ss;
 				} else {
 					*(++sp) = gapa;
-					*m |= Agap;
+					*m |= CCigar::Agap;
 				}
 			} else {
 				if(ss >= gapbj) {
 					*(++sp) = ss;
 				} else {
 					*(++sp) = gapbj;
-					*m |= Bgap;
+					*m |= CCigar::Bgap;
 				}
 			}
 		}
@@ -468,7 +460,7 @@ CCigar LclAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
 
     for(int i = 0; i <= nb; ++i) {
         sm[i] = CScore();
-        mtrx[i] = Zero;
+        mtrx[i] = CCigar::Zero;
         gapb[i] = CScore();
     }
     s[0] = CScore();
@@ -478,7 +470,7 @@ CCigar LclAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
     char* m = mtrx+nb;
 	
     for(int i = 0; i < na; ++i) {
-		*(++m) = Zero;
+		*(++m) = CCigar::Zero;
 		CScore gapa;
 		int ai = a[i];
         const char* matrix = delta[ai];
@@ -490,14 +482,14 @@ CCigar LclAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
             gapa += CScore(-sigma, 0);  // gapa extension
 			if(*sp+rsa > gapa) {
 				gapa = *sp+rsa;         // new gapa
-				*m |= Astart;
+				*m |= CCigar::Astart;
 			}
 			
 			CScore& gapbj = gapb[++j];
 			gapbj += CScore(-sigma, 1); // gapb extension
 			if(sm[j]+rsb > gapbj) {
 				gapbj = sm[j]+rsb;      // new gapb
-				*m |= Bstart;
+				*m |= CCigar::Bstart;
 			}
 			 
 			if(gapa > gapbj) {
@@ -509,7 +501,7 @@ CCigar LclAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
                     }
 				} else {
 					*(++sp) = gapa;
-					*m |= Agap;
+					*m |= CCigar::Agap;
 				}
 			} else {
 				if(ss >= gapbj) {
@@ -520,12 +512,12 @@ CCigar LclAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
                     }
 				} else {
 					*(++sp) = gapbj;
-					*m |= Bgap;
+					*m |= CCigar::Bgap;
 				}
 			}
             if(sp->Score() <= 0) {
                 *sp = CScore();
-                *m |= Zero;  
+                *m |= CCigar::Zero;  
             }
 		}
 		swap(sm,s);
@@ -546,7 +538,7 @@ CCigar LclAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
 	CScore* s = memory.s;       // best scores in current a-raw
 	CScore* sm = memory.sm;     // best scores in previous a-raw
 	CScore* gapb = memory.gapb; // best score with b-gap
-    char* mtrx = memory.mtrx;   // backtracking info (Astart/Bstart gap start, Agap/Bgap best score has gap and should be backtracked to Asrt/Bsart; Zero stop bactracking)
+    char* mtrx = memory.mtrx;   // backtracking info (Astart/CCigar::Bstart gap start, Agap/Bgap best score has gap and should be backtracked to Asrt/Bsart; Zero stop bactracking)
 
     CScore rsa(-rho-sigma, 0);   // new gapa
     CScore rsb(-rho-sigma, 1);   // new gapb  
@@ -558,11 +550,11 @@ CCigar LclAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
     if(pinleft) {
         if(nb > 0) {
             sm[1] = rsa;
-            mtrx[1] = Astart|Agap;
+            mtrx[1] = CCigar::Astart|CCigar::Agap;
             gapb[1] = bignegative;
             for(int i = 2; i <= nb; ++i) {
                 sm[i] = sm[i-1]+CScore(-sigma, 0);
-                mtrx[i] = Agap;
+                mtrx[i] = CCigar::Agap;
                 gapb[i] = bignegative;
             }
         }
@@ -570,7 +562,7 @@ CCigar LclAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
     } else {
         for(int i = 1; i <= nb; ++i) {
             sm[i] = CScore();
-            mtrx[i] = Zero;
+            mtrx[i] = CCigar::Zero;
             gapb[i] = bignegative;
         }
         s[0] = CScore();
@@ -581,7 +573,7 @@ CCigar LclAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
 	
     char* m = mtrx+nb;
 	for(int i = 0; i < na; ++i) {
-		*(++m) = pinleft ? Bstart|Bgap : Zero;
+		*(++m) = pinleft ? CCigar::Bstart|CCigar::Bgap : CCigar::Zero;
 		CScore gapa = bignegative;
 		int ai = a[i];
 		
@@ -594,14 +586,14 @@ CCigar LclAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
             gapa += CScore(-sigma, 0);  // gapa extension
 			if(*sp+rsa > gapa) {
 				gapa = *sp+rsa;         // new gapa
-				*m |= Astart;
+				*m |= CCigar::Astart;
 			}
 			
 			CScore& gapbj = gapb[++j];
 			gapbj += CScore(-sigma, 1); // gapb extension
 			if(sm[j]+rsb > gapbj) {
 				gapbj = sm[j]+rsb;      // new gapb
-				*m |= Bstart;
+				*m |= CCigar::Bstart;
 			}
 			 
 			if(gapa > gapbj) {
@@ -613,7 +605,7 @@ CCigar LclAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
                     }
 				} else {
 					*(++sp) = gapa;
-					*m |= Agap;
+					*m |= CCigar::Agap;
 				}
 			} else {
 				if(ss >= gapbj) {
@@ -624,12 +616,12 @@ CCigar LclAlign(const  char* a, int na, const  char*  b, int nb, int rho, int si
                     }
 				} else {
 					*(++sp) = gapbj;
-					*m |= Bgap;
+					*m |= CCigar::Bgap;
 				}
 			}
             if(sp->Score() <= 0 && !pinleft) {
                 *sp = CScore();
-                *m |= Zero;  
+                *m |= CCigar::Zero;  
             }
 		}
 		swap(sm,s);
@@ -669,7 +661,7 @@ CCigar VariBandAlign(const  char* a, int na, const  char*  b, int nb, int rho, i
         s[i] = CScore();
         sm[i] = CScore();
         gapb[i] = CScore();
-        mtrx[i] = Zero;
+        mtrx[i] = CCigar::Zero;
     }
 
     CScore max_score;
@@ -684,7 +676,7 @@ CCigar VariBandAlign(const  char* a, int na, const  char*  b, int nb, int rho, i
         int bleft = blimits->first;
         int bright = blimits->second;
         m += bleft;
-        *(++m) = Zero;
+        *(++m) = CCigar::Zero;
 		CScore gapa;
         CScore* sp = s+bleft;
         *sp = CScore();
@@ -695,14 +687,14 @@ CCigar VariBandAlign(const  char* a, int na, const  char*  b, int nb, int rho, i
             gapa += CScore(-sigma, 0);  // gapa extension
 			if(*sp+rsa > gapa) {
 				gapa = *sp+rsa;
-				*m |= Astart;
+				*m |= CCigar::CCigar::Astart;
 			}
 			
 			CScore& gapbj = gapb[++j];
 			gapbj += CScore(-sigma, 1); // gapb extension
 			if(sm[j]+rsb > gapbj) {
 				gapbj = sm[j]+rsb;
-				*m |= Bstart;
+				*m |= CCigar::Bstart;
 			}
 			 
 			if(gapa > gapbj) {
@@ -714,7 +706,7 @@ CCigar VariBandAlign(const  char* a, int na, const  char*  b, int nb, int rho, i
                     }
 				} else {
 					*(++sp) = gapa;
-					*m |= Agap;
+					*m |= CCigar::Agap;
 				}
 			} else {
 				if(ss >= gapbj) {
@@ -725,12 +717,12 @@ CCigar VariBandAlign(const  char* a, int na, const  char*  b, int nb, int rho, i
                     }
 				} else {
 					*(++sp) = gapbj;
-					*m |= Bgap;
+					*m |= CCigar::Bgap;
 				}
 			}
             if(sp->Score() <= 0) {
                 *sp = CScore();
-                *m |= Zero;  
+                *m |= CCigar::Zero;  
             }
 		}
         if(++blimits == last)
@@ -744,7 +736,7 @@ CCigar VariBandAlign(const  char* a, int na, const  char*  b, int nb, int rho, i
         int nextr = blimits->second;
         //right increased
         for(int l = bright+1; l <= nextr; ++l)
-            m[l+1] = Zero;
+            m[l+1] = CCigar::Zero;
         //right decreased
         for(int l = nextr+1; l <= bright; ++l) {
             gapb[l+1] = CScore();
@@ -755,7 +747,7 @@ CCigar VariBandAlign(const  char* a, int na, const  char*  b, int nb, int rho, i
         for(int l = nextl-1; l <= bleft-1; ++l) {
             gapb[l+1] = CScore();
             sm[l+1] = CScore();
-            m[l+1] = Zero;
+            m[l+1] = CCigar::Zero;
         }
 
         m += nb;     // end of the current raw
@@ -788,7 +780,7 @@ CCigar BandAlign(const  char* a, int na, const  char*  b, int nb, int rho, int s
         gapb[i] = CScore();
     }
     for(int i = 0; i < band+2; ++i)
-        mtrx[i] = Zero;    
+        mtrx[i] = CCigar::Zero;    
 
     CScore max_score;
     char* max_ptr = mtrx;
@@ -799,7 +791,7 @@ CCigar BandAlign(const  char* a, int na, const  char*  b, int nb, int rho, int s
         int bleft = max(0, i-band/2);
         int bright = i+band/2;
         char* m = mtrx+size_t(i+1)*(band+2)+band-(bright-bleft+1);
-        *m = Zero;
+        *m = CCigar::Zero;
         bright = min(bright, nb-1);
 
 		CScore gapa;
@@ -812,14 +804,14 @@ CCigar BandAlign(const  char* a, int na, const  char*  b, int nb, int rho, int s
             gapa += CScore(-sigma, 0);  // gapa extension
 			if(*sp+rsa > gapa) {
 				gapa = *sp+rsa;
-				*m |= Astart;
+				*m |= CCigar::CCigar::Astart;
 			}
 			
 			CScore& gapbj = gapb[++j];
 			gapbj += CScore(-sigma, 1); // gapb extension
 			if(sm[j]+rsb > gapbj) {
 				gapbj = sm[j]+rsb;
-				*m |= Bstart;
+				*m |= CCigar::Bstart;
 			}
 			 
 			if(gapa > gapbj) {
@@ -831,7 +823,7 @@ CCigar BandAlign(const  char* a, int na, const  char*  b, int nb, int rho, int s
                     }
 				} else {
 					*(++sp) = gapa;
-					*m |= Agap;
+					*m |= CCigar::Agap;
 				}
 			} else {
 				if(ss >= gapbj) {
@@ -842,15 +834,15 @@ CCigar BandAlign(const  char* a, int na, const  char*  b, int nb, int rho, int s
                     }
 				} else {
 					*(++sp) = gapbj;
-					*m |= Bgap;
+					*m |= CCigar::Bgap;
 				}
 			}
             if(sp->Score() <= 0) {
                 *sp = CScore();
-                *m |= Zero;  
+                *m |= CCigar::Zero;  
             }
 		}
-        *(++m) = Zero;
+        *(++m) = CCigar::Zero;
 		swap(sm,s);
 	}
   
@@ -921,7 +913,7 @@ SMatrix::SMatrix() { // matrix for proteins
     }
 }
 
-}; // namespace
+} // namespace
 	
 
 

@@ -177,5 +177,5 @@ namespace DeBruijn {
         }        
     };
 
-}; // namespace
+} // namespace
 #endif /* _GENETIC_CODE_ */

@@ -39,9 +39,11 @@ namespace DeBruijn {
 typedef pair<string,string> TCharAlign;
 typedef pair<int,int> TRange;
 
-class CCigar {
+class CCigarBase {
 public:
-    CCigar(int qto = -1, int sto = -1) : m_qfrom(qto+1), m_qto(qto), m_sfrom(sto+1), m_sto(sto) {}
+    enum{Agap = 1, Bgap = 2, Astart = 4, Bstart = 8, Zero = 16, AgapFS1 = 32, AstartFS1 = 64, AgapFS2 = 128, AstartFS2 = 256, BgapFS1 = 512, BstartFS1 = 1024, BgapFS2 = 2048, BstartFS2 = 4096};
+
+    CCigarBase(int qto, int sto) : m_qfrom(qto+1), m_qto(qto), m_sfrom(sto+1), m_sto(sto) {}
     struct SElement {
         SElement(int l, char t) : m_len(l), m_type(t) {}
         int m_len;
@@ -49,20 +51,26 @@ public:
     };
     void PushFront(const SElement& el);
     void PushBack(const SElement& el);
-    void PushFront(const CCigar other_cigar);
+    void PushFront(const CCigarBase& other_cigar);
     string CigarString(int qstart, int qlen) const; // qstart, qlen identify notaligned 5'/3' parts
-    string DetailedCigarString(int qstart, int qlen, const  char* query, const  char* subject, bool include_soft_clip = true) const;
-    string BtopString(int qstart, int qlen, const  char* query, const  char* subject) const;
     TRange QueryRange() const { return TRange(m_qfrom, m_qto); }
+
+protected:
+    list<SElement> m_elements;
+    int m_qfrom, m_qto, m_sfrom, m_sto;
+};
+
+class CCigar : public CCigarBase {
+public:
+    CCigar(int qto = -1, int sto = -1) : CCigarBase(qto, sto) {}
+    string DetailedCigarString(int qstart, int qlen, const  char* query, const  char* subject, bool include_soft_clip = true) const;
+    string BtopString(const  char* query, const  char* subject) const;
     TRange SubjectRange() const { return TRange(m_sfrom, m_sto); }
     TCharAlign ToAlign(const  char* query, const  char* subject) const;
     int Matches(const  char* query, const  char* subject) const;
     int Distance(const  char* query, const  char* subject) const;
     int Score(const  char* query, const  char* subject, int gopen, int gapextend, const char delta[256][256]) const;
-
-private:
-    list<SElement> m_elements;
-    int m_qfrom, m_qto, m_sfrom, m_sto;
+    void PrintAlign(const  char* query, const  char* subject, const char delta[256][256], ostream& os) const;
 };
 
 //Needleman-Wunsch
@@ -88,6 +96,28 @@ struct SMatrix
 	char matrix[256][256];
 };
 
+class CScore {
+public:
+    // tiebreaker is used to maximize query coverage in case of the same main score
+    // we keep score and tiebreaker in int64 integer
+    // tiebreaker must be >= 0 or it will spill into the score part    
+    CScore() : m_score(0) {}
+    CScore(int32_t score, int32_t breaker) : m_score((int64_t(score) << 32) + breaker) {}
+    bool operator>(const CScore& other) const { return m_score > other.m_score; }
+    bool operator>=(const CScore& other) const { return m_score >= other.m_score; }
+    CScore  operator+(const CScore& other) const { 
+        return CScore(m_score+other.m_score); 
+    }
+    CScore& operator+=(const CScore& other) {
+        m_score += other.m_score;
+        return *this;
+    }
+    int32_t Score() const { return (m_score >> 32); }
+    
+private:
+    CScore(int64_t score) : m_score(score) {}
+    int64_t m_score;
+};
 
 template<class T>
 int EditDistance(const T &s1, const T & s2) {
@@ -129,7 +159,7 @@ double Entropy(RandomIterator start, size_t length) {
     return entropy;
 }
 
-}; // namespace
+} // namespace
 
 #endif  // GLBALIGN__HPP
 

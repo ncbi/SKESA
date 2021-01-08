@@ -55,13 +55,13 @@ int main(int argc, const char* argv[]) {
 #endif
         ("reads", value<vector<string>>(), "Input fasta/fastq file(s) (could be used multiple times for different runs) [string]")
         ("kmer", value<int>()->default_value(21), "Kmer length [integer]")
-        ("min_count", value<int>()->default_value(2), "Minimal count for kmers retained for comparing alternate choices [integer]")
-        ("vector_percent", value<double>()->default_value(0.05, "0.05"), "Count for  vectors as a fraction of the read number (1. disables) [float (0,1]]")
+        ("min_count", value<int>()->default_value(2), "Minimal count for kmers retained [integer]")
+        ("vector_percent", value<double>()->default_value(0.05, "0.05"), "Percentage of reads containing 19-mer for the 19-mer to be considered a vector (1. disables) [float (0,1]]")
 
-        ("estimated_kmers", value<int>()->default_value(100), "Estimated number of unique kmers for bloom filter (millions) for hash count [integer]")
+        ("estimated_kmers", value<int>()->default_value(100), "Estimated number of distinct kmers for bloom filter (millions) for hash count [integer]")
         ("skip_bloom_filter", "Don't do bloom filter; use --estimated_kmers as the hash table size for hash count [flag]")
 
-        ("dbg_out", value<string>(), "De Bruijn graph output")
+        ("dbg_out", value<string>(), "de Bruijn graph output")
         ("text_out", value<string>(), "Text kmer output")
         ("hist", value<string>(), "File for histogram [string]")
 
@@ -72,7 +72,7 @@ int main(int argc, const char* argv[]) {
         store(parse_command_line(argc, argv, all), argm);
         notify(argm);    
 
-        if(argm.count("help")) {
+        if(argc == 1 || argm.count("help")) {
 #ifdef SVN_REV
             cout << "SVN revision:" << SVN_REV << endl << endl;
 #endif
@@ -81,11 +81,10 @@ int main(int argc, const char* argv[]) {
         }
 
         if(argm.count("version")) {
-            cout << "kmercounter 2.1.0";
+            cout << "kmercounter 2.1.0" << endl;
 #ifdef SVN_REV
-            cout << "-SVN_" << SVN_REV;
+            cout << "SVN revision:" << SVN_REV << endl;
 #endif
-            cout << endl;
             return 0;
         }
 
@@ -140,7 +139,7 @@ int main(int argc, const char* argv[]) {
         estimated_kmer_num =  argm["estimated_kmers"].as<int>();
         kmer = argm["kmer"].as<int>();
 
-        CReadsGetter readsgetter(sra_list, file_list, vector<string>(), ncores, false);
+        CReadsGetter readsgetter(sra_list, file_list, ncores, false);
         vector_percent = argm["vector_percent"].as<double>();
         if(vector_percent > 1.) {
             cerr << "Value of --vector_percent  must be <= 1" << endl;

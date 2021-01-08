@@ -167,7 +167,7 @@ public:
     /** Get the size of an instance of the class used by the variant  (ie. one of the Ti template class parameters)
      * \return the size of an object (in bits).
      */
-    const size_t getSize () const { return boost::apply_visitor (Integer_size(),  *(*this)); }
+    size_t getSize () const { return boost::apply_visitor (Integer_size(),  *(*this)); }
 
     /** Operator +
      * \param[in] a : first operand
@@ -344,11 +344,11 @@ private:
         template<typename T>  const char* operator() (const T& a) const { return a.getName();  }};
 
     struct Integer_size : public boost::static_visitor<const size_t>    {
-        template<typename T>  const size_t operator() (const T& a) const  { return a.getSize();  }};
+        template<typename T>  size_t operator() (const T& a) const  { return a.getSize();  }};
 
     struct Integer_plus : public boost::static_visitor<IntegerTemplate>    {
         template<typename T>              IntegerTemplate operator() (const T& a, const T& b) const  { return IntegerTemplate(a + b);  }
-        template<typename T, typename U>  IntegerTemplate operator() (const T& a, const U& b) const  { return IntegerTemplate();}
+        template<typename T, typename U>  IntegerTemplate operator() (const T& , const U& ) const    { return IntegerTemplate();}
     };
 
     struct Number_plus : public boost::static_visitor<IntegerTemplate>    {
@@ -359,47 +359,47 @@ private:
 
     struct Integer_minus : public boost::static_visitor<IntegerTemplate>    {
         template<typename T>              IntegerTemplate operator() (const T& a, const T& b) const  { return IntegerTemplate(a - b);  }
-        template<typename T, typename U>  IntegerTemplate operator() (const T& a, const U& b) const  { return IntegerTemplate();  }
+        template<typename T, typename U>  IntegerTemplate operator() (const T& , const U& ) const    { return IntegerTemplate();  }
     };
 
     struct Integer_or : public boost::static_visitor<IntegerTemplate>    {
         template<typename T>              IntegerTemplate operator() (const T& a, const T& b) const  { return IntegerTemplate(a | b);  }
-        template<typename T, typename U>  IntegerTemplate operator() (const T& a, const U& b) const  { return IntegerTemplate();  }
+        template<typename T, typename U>  IntegerTemplate operator() (const T& , const U& ) const    { return IntegerTemplate();  }
     };
 
     struct Integer_xor : public boost::static_visitor<IntegerTemplate>    {
         template<typename T>              IntegerTemplate operator() (const T& a, const T& b) const  { return IntegerTemplate(a ^ b);  }
-        template<typename T, typename U>  IntegerTemplate operator() (const T& a, const U& b) const  { return IntegerTemplate();  }
+        template<typename T, typename U>  IntegerTemplate operator() (const T& , const U& ) const    { return IntegerTemplate();  }
     };
 
     struct Integer_and : public boost::static_visitor<IntegerTemplate>    {
         template<typename T>              IntegerTemplate operator() (const T& a, const T& b) const  { return IntegerTemplate(a & b);  }
-        template<typename T, typename U>  IntegerTemplate operator() (const T& a, const U& b) const  { return IntegerTemplate();  }
+        template<typename T, typename U>  IntegerTemplate operator() (const T& , const U& ) const    { return IntegerTemplate();  }
     };
 
     struct Integer_less : public boost::static_visitor<bool>    {
         template<typename T>              bool operator() (const T& a, const T& b) const  { return a < b;  }
-        template<typename T, typename U>  bool operator() (const T& a, const U& b) const  { return false;  }
+        template<typename T, typename U>  bool operator() (const T& , const U& ) const    { return false;  }
     };
 
     struct Integer_lesseq : public boost::static_visitor<bool>    {
         template<typename T>              bool operator() (const T& a, const T& b) const  { return a <= b;  }
-        template<typename T, typename U>  bool operator() (const T& a, const U& b) const  { return false;   }
+        template<typename T, typename U>  bool operator() (const T& , const U& ) const    { return false;   }
     };
 
     struct Integer_equals : public boost::static_visitor<bool>    {
         template<typename T>              bool operator() (const T& a, const T& b) const  { return a == b;  }
-        template<typename T, typename U>  bool operator() (const T& a, const U& b) const  { return false;   }
+        template<typename T, typename U>  bool operator() (const T& , const U& ) const    { return false;   }
     };
 
     struct Integer_plusaffect : public boost::static_visitor<>    {
         template<typename T>              void operator() ( T& a, const T& b) const  { a += b;  }
-        template<typename T, typename U>  void operator() ( T& a, const U& b) const  {   }
+        template<typename T, typename U>  void operator() ( T& , const U& ) const    {   }
     };
 
     struct Integer_xoraffect : public boost::static_visitor<>    {
         template<typename T>              void operator() ( T& a, const T& b) const  { a ^= b;  }
-        template<typename T, typename U>  void operator() ( T& a, const U& b) const  {   }
+        template<typename T, typename U>  void operator() ( T& , const U& ) const    {   }
     };
 
     struct Integer_compl : public boost::static_visitor<IntegerTemplate>    {
@@ -452,7 +452,7 @@ private:
 typedef IntegerTemplate TKmer;
 
 /********************************************************************************/
-};
+}
 /********************************************************************************/
 
 #endif /* _GATB_CORE_TOOLS_MATH_INTEGER_HPP_ */

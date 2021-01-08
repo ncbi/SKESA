@@ -88,5 +88,5 @@ namespace DeBruijn {
         }
     }
             
-}; // namespace
+} // namespace
 #endif /* _KmerInit_ */

@@ -27,7 +27,7 @@
 #ifndef _Concurrent_Hash_
 #define _Concurrent_Hash_
 
-
+#include <functional>   // std::bind
 #include "Integer.hpp"
 #include "common_util.hpp"
 
@@ -111,6 +111,34 @@ namespace DeBruijn {
         int HashNum() const { return m_hash_num; }
         size_t TableSize() const { return m_table_size; } // number of counters
         size_t TableFootPrint() const { return (sizeof(SBloomBlock)+1)*m_count_table.size(); } // bytes
+        int MinCount() const { return m_min_count; }
+
+        void Save(ostream& out) const {
+            out.write(reinterpret_cast<const char*>(&m_table_size), sizeof m_table_size);         
+            out.write(reinterpret_cast<const char*>(&m_counter_bit_size), sizeof m_counter_bit_size);         
+            out.write(reinterpret_cast<const char*>(&m_hash_num), sizeof m_hash_num);         
+            out.write(reinterpret_cast<const char*>(&m_min_count), sizeof m_min_count);         
+            out.write(reinterpret_cast<const char*>(&m_count_table[0]), m_blocks*(sizeof m_count_table[0])); 
+            if(!out)
+                throw runtime_error("Error in CConcurrentBlockedBloomFilter write"); 
+        }
+        CConcurrentBlockedBloomFilter(istream& in) {
+            size_t table_size;
+            int counter_bit_size;
+            int hash_num;
+            int min_count;
+            if(!in.read(reinterpret_cast<char*>(&table_size), sizeof table_size))
+                throw runtime_error("Error in CConcurrentBlockedBloomFilter read");
+            if(!in.read(reinterpret_cast<char*>(&counter_bit_size), sizeof counter_bit_size))
+                throw runtime_error("Error in CConcurrentBlockedBloomFilter read");
+            if(!in.read(reinterpret_cast<char*>(&hash_num), sizeof hash_num))
+                throw runtime_error("Error in CConcurrentBlockedBloomFilter read");
+            if(!in.read(reinterpret_cast<char*>(&min_count), sizeof min_count))
+                throw runtime_error("Error in CConcurrentBlockedBloomFilter read");
+            Reset(table_size, counter_bit_size, hash_num, min_count);
+            if(!in.read(reinterpret_cast<char*>(&m_count_table[0]), m_blocks*(sizeof m_count_table[0])))
+                throw runtime_error("Error in CConcurrentBlockedBloomFilter read");
+        }
 
     private:
         typedef uint64_t TCell;
@@ -129,7 +157,7 @@ namespace DeBruijn {
         int m_min_count;
         int m_max_element;
         int m_bits_in_cell = 8*sizeof(TCell);
-        int m_bits_in_cell_log = log(m_bits_in_cell)/log(2);
+        int m_bits_in_cell_log = log2(m_bits_in_cell)+0.5;  //log(m_bits_in_cell)/log(2);
     };
     typedef CConcurrentBlockedBloomFilter<128> TConcurrentBlockedBloomFilter;
 
@@ -538,7 +566,6 @@ namespace DeBruijn {
         atomic<uint64_t> m_status;
     };
 
-    //TODO needs testing
     template<typename Key, class MappedV, int BucketBlock, class Hash = std::hash<Key>>
     class CHashMap {
     public:
@@ -761,7 +788,7 @@ namespace DeBruijn {
 
         struct swap_with_other : public boost::static_visitor<> {
             template <typename T> void operator() (T& a, T& b) const { a.Swap(b); }
-            template <typename T, typename U> void operator() (T& a, U& b)  const { throw runtime_error("Can't swap different type containers"); }
+            template <typename T, typename U> void operator() (T& , U& )  const { throw runtime_error("Can't swap different type containers"); }
         };
 
         struct index_get : public boost::static_visitor<pair<TKmer, MappedV*>> {
@@ -1069,7 +1096,7 @@ namespace DeBruijn {
 
         struct rehash_bucket : public boost::static_visitor<> {
             rehash_bucket(size_t bf, size_t bt, CKmerHashCount& h) : bucket_from(bf), bucket_to(bt), hash(h) {}
-            template <typename T> void operator() (T& a, T& b) const {
+            template <typename T> void operator() (T& , T& b) const {
                 typedef typename T::value_type::element_t element_t;
                 for(size_t indexb = bucket_from; indexb <= bucket_to; ++indexb) {
                     auto& bucket_b = b[indexb];
@@ -1089,7 +1116,7 @@ namespace DeBruijn {
                     }
                 }
             }
-            template <typename T, typename U> void operator() (T& a, U& b) const { throw runtime_error("Can't rehash from different type container"); }
+            template <typename T, typename U> void operator() (T& , U& ) const { throw runtime_error("Can't rehash from different type container"); }
             
             size_t bucket_from;
             size_t bucket_to;
@@ -1319,7 +1346,7 @@ namespace DeBruijn {
         }
         CKmerHashCount& Kmers() { return m_hash_table; }
         size_t KmerNum() const { return m_kmer_num; }
-        bool IsStranded() const { return m_is_stranded; }              // indicates if contains stranded information            
+        bool IsStranded() const { return m_is_stranded; }              // indicates if contains stranded information        
 
     private:
 
@@ -1494,5 +1521,5 @@ namespace DeBruijn {
     };
 
 
-}; // namespace
+} // namespace
 #endif /*_Concurrent_Hash_*/

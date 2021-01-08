@@ -342,5 +342,5 @@ namespace DeBruijn {
     };
 
 
-}; // namespace 
+} // namespace 
 #endif /* _Model_ */

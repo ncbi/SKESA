@@ -1029,5 +1029,5 @@ namespace DeBruijn {
     }
 
 
-}; // namespace
+} // namespace
 #endif /* _DBGAssembler_ */

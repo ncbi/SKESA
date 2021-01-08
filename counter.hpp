@@ -127,7 +127,7 @@ namespace DeBruijn {
         };
         struct container_size : public boost::static_visitor<size_t> { template <typename T> size_t operator()(const T& v) const { return v.size();} };
         struct container_capacity : public boost::static_visitor<size_t> { template <typename T> size_t operator()(const T& v) const { return v.capacity();} };
-        struct element_size : public boost::static_visitor<size_t> { template <typename T> size_t operator()(const T& v) const { return sizeof(typename  T::value_type);} };
+        struct element_size : public boost::static_visitor<size_t> { template <typename T> size_t operator()(const T& ) const { return sizeof(typename  T::value_type);} };
         struct clear : public boost::static_visitor<> { template <typename T> void operator()(T& v) const { v.clear();} };
         struct push_back : public boost::static_visitor<> { 
             push_back(const TKmer& k, size_t c) : kmer(k), count(c) {}
@@ -140,7 +140,7 @@ namespace DeBruijn {
         };
         struct push_back_elements : public boost::static_visitor<> {
             template <typename T> void operator() (T& a, const T& b) const { a.insert(a.end(), b.begin(), b.end()); }
-            template <typename T, typename U> void operator() (T& a, const U& b) const { throw runtime_error("Can't copy from different type container"); }
+            template <typename T, typename U> void operator() (T& , const U& ) const { throw runtime_error("Can't copy from different type container"); }
         };
         struct merge_sorted : public boost::static_visitor<> {
             template <typename T> void operator() (T& a, const T& b) const { 
@@ -149,7 +149,7 @@ namespace DeBruijn {
                 merge(a.begin(), a.end(), b.begin(), b.end(), back_inserter(merged));
                 merged.swap(a); 
             }
-            template <typename T, typename U> void operator() (T& a, const U& b) const { throw runtime_error("Can't merge different type containers"); }
+            template <typename T, typename U> void operator() (T& , const U& ) const { throw runtime_error("Can't merge different type containers"); }
         };
         struct update_count : public boost::static_visitor<> {
             update_count(size_t c, size_t i) : count(c), index(i) {}
@@ -175,7 +175,7 @@ namespace DeBruijn {
         struct container_sort : public boost::static_visitor<> { template <typename T> void operator() (T& v) const { sort(v.begin(), v.end()); }};
         struct swap_with_other : public boost::static_visitor<> { 
             template <typename T> void operator() (T& a, T& b) const { a.swap(b); }
-            template <typename T, typename U> void operator() (T& a, U& b)  const { throw runtime_error("Can't swap different type containers"); }
+            template <typename T, typename U> void operator() (T& , U& )  const { throw runtime_error("Can't swap different type containers"); }
         };
         
         struct remove_low_count : public boost::static_visitor<> {
@@ -235,7 +235,7 @@ namespace DeBruijn {
                 if((uint32_t)b.back().second < min_count)
                     b.pop_back();
             }
-            template <typename T, typename U> void operator() (T& a, U& b) const { throw runtime_error("Can't extract into different type container"); }
+            template <typename T, typename U> void operator() (T& , U& ) const { throw runtime_error("Can't extract into different type container"); }
 
             unsigned min_count;
         };
@@ -540,5 +540,5 @@ namespace DeBruijn {
         list<TKmerCount> m_uniq_kmers;                       // storage for kmer buckets; at the end will have one element which is the result     
     };
 
-}; // namespace
+} // namespace
 #endif /* _KmerCounter_ */

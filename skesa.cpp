@@ -158,7 +158,7 @@ void PrintRslt(CDBGAssembler<DBGraph>& assembler, variables_map& argm) {
             abundance /= first_variant.size()-first_graph.KmerLen()+1;
             out << ">Contig_" << ++num << "_" << abundance;
             if(contig.m_circular) {
-                out << "_Circ";
+                out << "_Circ [topology=circular]";
                 first_variant.erase(first_variant.size()-first_graph.KmerLen()+1, first_graph.KmerLen()-1); 
             }
             out << "\n" << first_variant << "\n";
@@ -322,13 +322,13 @@ int main(int argc, const char* argv[]) {
         ("cores", value<int>()->default_value(0), "Number of cores to use (default all) [integer]")
         ("memory", value<int>()->default_value(32), "Memory available (GB, only for sorted counter) [integer]")
         ("hash_count", "Use hash counter [flag]")
-        ("estimated_kmers", value<int>()->default_value(100), "Estimated number of unique kmers for bloom filter (millions, only for hash counter) [integer]")
+        ("estimated_kmers", value<int>()->default_value(100), "Estimated number of distinct kmers for bloom filter (millions, only for hash counter) [integer]")
         ("skip_bloom_filter", "Don't do bloom filter; use --estimated_kmers as the hash table size (only for hash counter) [flag]");
 
     options_description input("Input/output options : at least one input providing reads for assembly must be specified");
     input.add_options()
         ("reads", value<vector<string>>(), "Input fasta/fastq file(s) for reads (could be used multiple times for different runs, could be gzipped) [string]")
-        ("use_paired_ends", "Indicates that a single (not comma separated) fasta/fastq file contains paired reads [flag]")
+        ("use_paired_ends", "Indicates that single (not comma separated) fasta/fastq files contain paired reads [flag]")
 #ifndef NO_NGS
         ("sra_run", value<vector<string>>(), "Input sra run accession (could be used multiple times for different runs) [string]")
 #endif
@@ -340,7 +340,7 @@ int main(int argc, const char* argv[]) {
         ("min_count", value<int>(), "Minimal count for kmers retained for comparing alternate choices [integer]")
         ("max_kmer", value<int>(), "Maximal kmer length for assembly [integer]")
         ("max_kmer_count", value<int>(), "Minimum acceptable average count for estimating the maximal kmer length in reads [integer]")
-        ("vector_percent", value<double>()->default_value(0.05, "0.05"), "Count for  vectors as a fraction of the read number (1. disables) [float (0,1]]")
+        ("vector_percent", value<double>()->default_value(0.05, "0.05"), "Percentage of reads containing 19-mer for the 19-mer to be considered a vector (1. disables) [float (0,1]]")
         ("insert_size", value<int>(), "Expected insert size for paired reads (if not provided, it will be estimated) [integer]")
         ("steps", value<int>()->default_value(11), "Number of assembly iterations from minimal to maximal kmer length in reads [integer]")
         ("fraction", value<double>()->default_value(0.1, "0.1"), "Maximum noise to signal ratio acceptable for extension [float [0,1)]")
@@ -385,7 +385,7 @@ int main(int argc, const char* argv[]) {
         if(argm.count("gz"))
             cerr << "WARNING: option --gz is deprecated - gzipped files are now recognized automatically" << endl;       
 
-        if(argm.count("help")) {
+        if(argc == 1 || argm.count("help")) {
 #ifdef SVN_REV
             cout << "SVN revision:" << SVN_REV << endl << endl;
 #endif
@@ -394,11 +394,10 @@ int main(int argc, const char* argv[]) {
         }
 
         if(argm.count("version")) {
-            cout << "SKESA 2.4.0";
+            cout << "SKESA 2.4.0" << endl;
 #ifdef SVN_REV
-            cout << "-SVN_" << SVN_REV;
+            cout << "SVN revision:" << SVN_REV << endl;
 #endif
-            cout << endl;
             return 0;
         }
 

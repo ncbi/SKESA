@@ -58,7 +58,7 @@ namespace DeBruijn {
         } 
     }
 
-}; // namespace
+} // namespace
 
 
 int main(int argc, const char* argv[])
@@ -73,7 +73,7 @@ int main(int argc, const char* argv[])
         ("help,h", "Produce help message")
         ("version,v", "Print version")
         ("cores", value<int>()->default_value(0), "Number of cores to use (default all) [integer]")
-        ("estimated_kmers", value<int>()->default_value(100), "Estimated number of unique kmers for bloom filter (millions) [integer]")
+        ("estimated_kmers", value<int>()->default_value(100), "Estimated number of distinct kmers for bloom filter (millions) [integer]")
         ("skip_bloom_filter", "Don't do bloom filter; use --estimated_kmers as the hash table size [flag]")
         ;
 
@@ -83,7 +83,7 @@ int main(int argc, const char* argv[])
         ("sra_run", value<vector<string>>(), "Input sra run accession (could be used multiple times for different runs) [string]")
 #endif
         ("reads", value<vector<string>>(), "Input fasta/fastq file(s) (could be used multiple times for different runs, could be gzipped) [string]")
-        ("use_paired_ends", "Indicates that a single (not comma separated) fasta/fastq file contains paired reads [flag]")
+        ("use_paired_ends", "Indicates that single (not comma separated) fasta/fastq files contain paired reads [flag]")
         ("contigs", value<string>(), "Input file with contigs [string]")
         ("gfa", value<string>(), "GFA graph output (stdout if not specified) [string]")
         ("dbg", value<string>(), "Input de Bruijn graph (optional) [string]")
@@ -96,18 +96,18 @@ int main(int argc, const char* argv[])
     assembly.add_options()
         ("kmer", value<int>()->default_value(41), "Kmer length for assembly [integer]")
         ("min_count", value<int>()->default_value(2), "Minimal count for kmers retained for comparing alternate choices [integer]")
-        ("vector_percent", value<double>()->default_value(0.05, "0.05"), "Count for vectors as a fraction of the read number (1. disables) [float (0,1]]")
-        ("fraction", value<double>()->default_value(0.1, "0.1"), "Threshold for extension")
+        ("vector_percent", value<double>()->default_value(0.05, "0.05"), "Percentage of reads containing 19-mer for the 19-mer to be considered a vector (1. disables) [float (0,1]]")
+        ("fraction", value<double>()->default_value(0.1, "0.1"), "Threshold for extension [float]")
         ("entropy", value<double>()->default_value(0.51, "0.51"), "Minimal entropy for a seed kmer [float]")
-        ("ext_len", value<int>()->default_value(2000), "Maximal length for extension")
+        ("ext_len", value<int>()->default_value(2000), "Maximal length for extension [integer]")
         ;
 
     options_description filter("Graph cleaning options");
     filter.add_options()
-        ("not_aligned_len", value<int>()->default_value(10), "Not aligned read length for break count")
-        ("not_aligned_count", value<int>()->default_value(3), "Number of not aligned reads to make a break")
-        ("aligned_count", value<int>()->default_value(2), "Number of aligned reads to confirm a connection")
-        ("max_path", value<int>()->default_value(1000), "Maximal number of paths allowed in 1 step of filtering")
+        ("not_aligned_len", value<int>()->default_value(10), "Not aligned read length for break count [integer]")
+        ("not_aligned_count", value<int>()->default_value(3), "Number of not aligned reads to make a break [integer]")
+        ("aligned_count", value<int>()->default_value(2), "Number of aligned reads to confirm a connection [integer]")
+        ("max_path", value<int>()->default_value(1000), "Maximal number of path extensions allowed for a single filtering check [integer]")
         ("no_filter_by_reads", "Don't use full length reads for variants filtering [flag]")
         ("no_filter_by_pairs", "Don't use mate pairs for variants filtering [flag]")
         ;
@@ -120,7 +120,7 @@ int main(int argc, const char* argv[])
         store(parse_command_line(argc, argv, all), argm);
         notify(argm);    
 
-        if(argm.count("help")) {
+        if(argc == 1 || argm.count("help")) {
 #ifdef SVN_REV
             cout << "SVN revision:" << SVN_REV << endl << endl;
 #endif

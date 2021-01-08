@@ -74,7 +74,7 @@ endif
 %.o: %.cpp
 	$(CC) -c -o $@ $< $(CFLAGS)
 
-binaries=skesa gfa_connector kmercounter
+binaries=skesa saute saute_prot gfa_connector kmercounter
 
 all: $(binaries)
 
@@ -87,6 +87,14 @@ glb_align.o: glb_align.hpp Makefile
 
 skesa.o: common_util.hpp concurrenthash.hpp readsgetter.hpp ngs_includes.hpp counter.hpp graphdigger.hpp assembler.hpp KmerInit.hpp DBGraph.hpp Integer.hpp LargeInt.hpp LargeInt1.hpp LargeInt2.hpp Model.hpp config.hpp glb_align.hpp Makefile $(NGS_DIR)/ngs.done
 skesa: skesa.o glb_align.o
+	$(CC) -o $@ $^ $(LIBS)
+
+saute.o: guidedassembler.hpp guidedgraph.hpp gfa.hpp common_util.hpp guidedpath_naa.hpp readsgetter.hpp ngs_includes.hpp concurrenthash.hpp counter.hpp graphdigger.hpp KmerInit.hpp DBGraph.hpp Integer.hpp LargeInt.hpp LargeInt1.hpp LargeInt2.hpp Model.hpp config.hpp Makefile
+saute: saute.o glb_align.o
+	$(CC) -o $@ $^ $(LIBS)
+
+saute_prot.o: guidedassembler.hpp guidedgraph.hpp genetic_code.hpp gfa.hpp common_util.hpp guidedpath_naa.hpp readsgetter.hpp ngs_includes.hpp concurrenthash.hpp counter.hpp graphdigger.hpp KmerInit.hpp DBGraph.hpp Integer.hpp LargeInt.hpp LargeInt1.hpp LargeInt2.hpp Model.hpp config.hpp Makefile
+saute_prot: saute_prot.o glb_align.o
 	$(CC) -o $@ $^ $(LIBS)
 
 gfa_connector.o: gfa.hpp glb_align.hpp common_util.hpp concurrenthash.hpp readsgetter.hpp ngs_includes.hpp graphdigger.hpp KmerInit.hpp  DBGraph.hpp Integer.hpp LargeInt.hpp LargeInt1.hpp LargeInt2.hpp Model.hpp config.hpp Makefile $(NGS_DIR)/ngs.done

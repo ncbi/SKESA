@@ -548,5 +548,5 @@ namespace DeBruijn {
     };    
     
 
-}; // namespace
+} // namespace
 #endif /* _DeBruijn_Graph_ */

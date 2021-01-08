@@ -137,7 +137,7 @@ public:
     /** Get the size of an instance of the class
      * \return the size of an object (in bits).
      */
-    static const size_t getSize ()  { return 8*sizeof(u_int64_t)*precision; }
+    static size_t getSize ()  { return 8*sizeof(u_int64_t)*precision; }
 
     /********************************************************************************/
     /** Constructor.

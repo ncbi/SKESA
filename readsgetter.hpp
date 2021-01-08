@@ -63,8 +63,8 @@ namespace DeBruijn {
 //           files specified as a list separated by comma with file for first mate followed by the file for second mate.
 //      ncores - number of cores
 //      usepairedends - flag to indicate that input reads are paired in case of a single file
-        CReadsGetter(const vector<string>& sra_list, const vector<string>& file_list, int ncores, bool usepairedends) : 
-            m_ncores(ncores), m_usepairedends(usepairedends) {
+        CReadsGetter(const vector<string>& sra_list, const vector<string>& file_list, int ncores, bool usepairedends, bool silent = false) : 
+            m_ncores(ncores), m_usepairedends(usepairedends), m_silent(silent) {
 
             CStopWatch timer;
             timer.Restart();
@@ -87,57 +87,18 @@ namespace DeBruijn {
             if(total == 0)
                 throw runtime_error("No valid reads available for assembly");
     
-            if(paired > 0)
-                cerr << "Total mates: " << total << " Paired reads: " << paired/2 << endl;
-            else
-                cerr << "Total reads: " << total << endl;
-            cerr << "Reads acquired in " << timer.Elapsed();
-
-            m_kmer_for_adapters = 19;
-            m_adapters = CKmerMap<int>(m_kmer_for_adapters);   
-        }
-
-//DEPRECATED
-//      sra_list, fasta_list, fastq_list - input reads from SRA accessions or files in fasta or fastq format.
-//           Files for paired reads should have mates interleaved (first followed by second) or should be in two separate
-//           files specified as a list separated by comma with file for first mate followed by the file for second mate.
-//      ncores - number of cores
-//      usepairedends - flag to indicate that input reads are paired
-        CReadsGetter(const vector<string>& sra_list, const vector<string>& fasta_list, const vector<string>& fastq_list, int ncores, bool usepairedends) : 
-            m_ncores(ncores), m_usepairedends(usepairedends) {
-
-            CStopWatch timer;
-            timer.Restart();
-
-
-            if(!fasta_list.empty())
-                ReadFastaOrFastq(fasta_list, true);
-            if(!fastq_list.empty())
-                ReadFastaOrFastq(fastq_list, false);
-#ifndef NO_NGS
-            if(!sra_list.empty())
-                GetFromSRA(sra_list);
-#endif
-
-            size_t total = 0;
-            size_t paired = 0;
-            for(auto& reads : m_reads) {
-                total += reads[0].ReadNum()+reads[1].ReadNum();
-                paired += reads[0].ReadNum();
+            if(!m_silent) {
+                if(paired > 0)
+                    cerr << "Total mates: " << total << " Paired reads: " << paired/2 << endl;
+                else
+                    cerr << "Total reads: " << total << endl;
+                cerr << "Reads acquired in " << timer.Elapsed();
             }
 
-            if(total == 0)
-                throw runtime_error("No valid reads available for assembly");
-    
-            if(paired > 0)
-                cerr << "Total mates: " << total << " Paired reads: " << paired/2 << endl;
-            else
-                cerr << "Total reads: " << total << endl;
-            cerr << "Reads acquired in " << timer.Elapsed();
-
             m_kmer_for_adapters = 19;
             m_adapters = CKmerMap<int>(m_kmer_for_adapters);   
         }
+
         virtual ~CReadsGetter() {}
 
         list<array<CReadHolder,2>>& Reads() { return m_reads; }
@@ -161,7 +122,8 @@ namespace DeBruijn {
             }
                                 
             ClipAdapters();
-            cerr << "Adapters clipped in " << timer.Elapsed();                                               
+            if(!m_silent)
+                cerr << "Adapters clipped in " << timer.Elapsed();                                               
         }
 
         void ClipAdaptersFromReads_SortedCounter(double vector_percent, int memory) {        
@@ -188,7 +150,8 @@ namespace DeBruijn {
             }
                                 
             ClipAdapters();
-            cerr << "Adapters clipped in " << timer.Elapsed();                                               
+            if(!m_silent)
+                cerr << "Adapters clipped in " << timer.Elapsed();                                               
         }
 
         void PrintAdapters() {
@@ -213,6 +176,168 @@ namespace DeBruijn {
         }
 
         CKmerMap<int>& Adapters() { return m_adapters; }
+
+        // Acquires reads from fasta or fastq
+        static void ReadOneFile(const string& file, array<CReadHolder,2>& all_reads, bool usepairedends) {
+            auto NextRead = [] (string& acc, string& read, bool isfasta, boost::iostreams::filtering_istream& is, const string& source_name) {
+                acc.clear();
+                read.clear();
+
+                if(isfasta) {// fasta   
+                    string record;
+                    if(!getline(is, record, '>')) {
+                        if(is.eof() && !is.bad())
+                            return false;
+                        else
+                            throw runtime_error("Error reading "+source_name);
+                    }
+                    size_t first_ret = min(record.size(),record.find('\n'));
+                    if(first_ret == string::npos)
+                        throw runtime_error("Invalid fasta file format in "+source_name);
+                    acc = record.substr(0, first_ret);
+                    read = record.substr(first_ret+1);
+                    read.erase(remove(read.begin(),read.end(),'\n'),read.end());            
+                } else { // fastq 
+                    if(!getline(is, acc)) {
+                        if(is.eof() && !is.bad())
+                            return false;
+                        else
+                            throw runtime_error("Error reading "+source_name);
+                    }
+                    if(acc[0] != '@')
+                        throw runtime_error("Invalid fastq file format in "+source_name);
+                    if(!getline(is, read))
+                        throw runtime_error("Error reading "+source_name);
+                    string line;
+                    if(!getline(is, line) || line[0] != '+')
+                        throw runtime_error("Error reading "+source_name);
+                    if(!getline(is, line))
+                        throw runtime_error("Error reading "+source_name);
+                }                
+
+                acc = acc.substr(0, acc.find_first_of(" \t"));
+
+                return true;
+            };
+
+            auto OpenStream = [] (const string& file, boost::iostreams::filtering_istream& is) {
+                if(file != "-") {
+                    ifstream gztest(file, ios_base::in|ios_base::binary);
+                    if(!gztest.is_open())
+                        throw runtime_error("Error opening "+file);
+                    array<uint8_t,2> gzstart;
+                    if(!gztest.read(reinterpret_cast<char*>(gzstart.data()), 2))
+                        throw runtime_error("Invalid file "+file);
+                    bool gzipped = (gzstart[0] == 0x1f && gzstart[1] == 0x8b);
+                    gztest.close();
+
+                    ios_base::openmode mode = ios_base::in;
+                    if(gzipped)
+                        mode |= ios_base::binary;
+                    boost::iostreams::file_source f{file, mode};
+                    if(gzipped)
+                        is.push(boost::iostreams::gzip_decompressor());
+                    is.push(f);
+                } else {
+                    is.push(cin);
+                }
+
+                // do a quick check of validity on first character of the file
+                char c;
+                if(!(is >> c) || (c != '>' && c != '@'))
+                    throw runtime_error("Invalid reads format in "+file);
+
+                bool isfasta = (c == '>');
+                if(!isfasta)
+                    is.putback(c);
+
+                return isfasta;                
+            };
+
+            // checks if ids for paired reads are name[./]1 and name[./]2
+            auto MatchIds = [] (const string& acc1, const string& acc2) {
+                boost::regex re1("(.+)[./]1");
+                boost::cmatch matches1;
+                boost::regex re2("(.+)[./]2");
+                boost::cmatch matches2;
+                return (acc1 == acc2 || (boost::regex_match(acc1.c_str(), matches1, re1) && boost::regex_match(acc2.c_str(), matches2, re2) && matches1[1] == matches2[1]));
+            };
+
+            string acc1;
+            string read1;                
+            string acc2;
+            string read2;
+            size_t comma = file.find(',');
+            if(comma == string::npos) {
+                boost::iostreams::filtering_istream is;
+                bool isfasta = OpenStream(file, is);
+
+                if(!usepairedends) {
+                    while(NextRead(acc1, read1, isfasta, is, file))
+                        InsertRead(read1, all_reads[1], file);
+                } else {
+                    if(NextRead(acc1, read1, isfasta, is, file)) {
+                        while(NextRead(acc2, read2, isfasta, is, file)) {
+                            if(MatchIds(acc1, acc2)) {
+                                InsertRead(read1, all_reads[0], file);
+                                InsertRead(read2, all_reads[0], file);
+                                NextRead(acc1, read1, isfasta, is, file);
+                            } else {
+                                InsertRead(read1, all_reads[1], file);
+                                acc1 = acc2;
+                                read1 = read2;
+                            }
+                        }
+                        if(!read1.empty())
+                            InsertRead(read1, all_reads[1], file);
+                    }
+                }
+            } else {
+                boost::iostreams::filtering_istream is1;
+                string file1 = file.substr(0,comma);
+                bool isfasta1 = OpenStream(file1, is1);
+                boost::iostreams::filtering_istream is2;
+                string file2 = file.substr(comma+1);
+                bool isfasta2 = OpenStream(file2, is2);
+                while(NextRead(acc1, read1, isfasta1, is1, file1)) {
+                    if(NextRead(acc2, read2, isfasta2, is2, file2)) {
+                        InsertRead(read1, all_reads[0], file1);
+                        InsertRead(read2, all_reads[0], file2);
+                    } else {
+                        throw runtime_error("Files "+file+" contain different number of mates");
+                    }
+                }
+            }
+            if(all_reads[0].ReadNum()+all_reads[1].ReadNum() == 0)
+                throw runtime_error("File(s) "+file+" doesn't contain valid reads");        
+        }
+
+        // insert read from source_name to rholder
+        static void InsertRead(string& read, CReadHolder& rholder, const string& source_name) {
+            //convert to upper case
+            for(char& c : read) c = toupper(c);
+            //check if read is valid
+            if(read.find_first_not_of("ACGTYRWSKMDVHBXN-") != string::npos)
+                throw runtime_error("Invalid sequence in "+source_name);           
+            size_t best_start = 0;
+            int best_len = 0;
+            size_t start = 0;
+
+            // find and store the leftmost longest unambiguous stretch of read
+            while(start < read.size()) {
+                size_t stop = min(read.size(),read.find_first_not_of("ACGT", start));
+                int len = stop-start;
+                if(len > best_len) {
+                    best_len = len;
+                    best_start = start;
+                }
+                start = read.find_first_of("ACGT", stop);
+            }
+            if(best_len > 0) 
+                rholder.PushBack(read.substr(best_start, best_len));
+            else
+                rholder.PushBack(string());  // keep a bogus read for paired  
+        }
     
     private:
         int MaxCount(double vector_percent) {
@@ -247,8 +372,10 @@ namespace DeBruijn {
                 }
             }
 
-            for(auto& count : clipping_points)
-                cerr << "Clipping point: " << count.first << " " << count.second << endl;
+            if(!m_silent) {
+                for(auto& count : clipping_points)
+                    cerr << "Clipping point: " << count.first << " " << count.second << endl;
+            }
 
             int64_t total_reads_after = 0;
             int64_t total_seq_after = 0;
@@ -257,7 +384,8 @@ namespace DeBruijn {
                 total_seq_after+= reads[0].TotalSeq()+reads[1].TotalSeq();
             }
 
-            cerr << "Adapters: " <<  m_adapters.Size()/2 << " Reads before: " << total_reads << " Sequence before: " << total_seq << " Reads after: " << total_reads_after << " Sequence after: " << total_seq_after << " Reads clipped: " << clipped_reads.load() << endl;
+            if(!m_silent)
+                cerr << "Adapters: " <<  m_adapters.Size()/2 << " Reads before: " << total_reads << " Sequence before: " << total_seq << " Reads after: " << total_reads_after << " Sequence after: " << total_seq_after << " Reads clipped: " << clipped_reads.load() << endl;
         }
 
         // adapter position in read; -1 if not found
@@ -365,33 +493,6 @@ namespace DeBruijn {
             clipped_reads += clipped;
         }
 
-        // insert read from source_name to rholder
-        static void InsertRead(string& read, CReadHolder& rholder, const string& source_name) {
-            //convert to upper case
-            for(char& c : read) c = toupper(c);
-            //check if read is valid
-            if(read.find_first_not_of("ACGTYRWSKMDVHBXN-") != string::npos)
-                throw runtime_error("Invalid sequence in "+source_name);           
-            size_t best_start = 0;
-            int best_len = 0;
-            size_t start = 0;
-
-            // find and store the leftmost longest unambiguous stretch of read
-            while(start < read.size()) {
-                size_t stop = min(read.size(),read.find_first_not_of("ACGT", start));
-                int len = stop-start;
-                if(len > best_len) {
-                    best_len = len;
-                    best_start = start;
-                }
-                start = read.find_first_of("ACGT", stop);
-            }
-            if(best_len > 0) 
-                rholder.PushBack(read.substr(best_start, best_len));
-            else
-                rholder.PushBack(string());  // keep a bogus read for paired  
-        }
-
         typedef tuple<string,size_t,size_t> TSlice;
         typedef list<TSlice> TReadJob;
 
@@ -492,298 +593,12 @@ namespace DeBruijn {
         }
 #endif
 
-        // Acquires reads from fasta or fastq
-        // file_list - file names (could be separated by comma for paired reads)
+
         void ReadFastaOrFastq(const vector<string>& file_list) {
-            auto NextRead = [] (string& acc, string& read, bool isfasta, boost::iostreams::filtering_istream& is, const string& source_name) {
-                acc.clear();
-                read.clear();
-
-                if(isfasta) {// fasta   
-                    string record;
-                    if(!getline(is, record, '>')) {
-                        if(is.eof() && !is.bad())
-                            return false;
-                        else
-                            throw runtime_error("Error reading "+source_name);
-                    }
-                    size_t first_ret = min(record.size(),record.find('\n'));
-                    if(first_ret == string::npos)
-                        throw runtime_error("Invalid fasta file format in "+source_name);
-                    acc = record.substr(0, first_ret);
-                    read = record.substr(first_ret+1);
-                    read.erase(remove(read.begin(),read.end(),'\n'),read.end());            
-                } else { // fastq 
-                    if(!getline(is, acc)) {
-                        if(is.eof() && !is.bad())
-                            return false;
-                        else
-                            throw runtime_error("Error reading "+source_name);
-                    }
-                    if(acc[0] != '@')
-                        throw runtime_error("Invalid fastq file format in "+source_name);
-                    if(!getline(is, read))
-                        throw runtime_error("Error reading "+source_name);
-                    string line;
-                    if(!getline(is, line) || line[0] != '+')
-                        throw runtime_error("Error reading "+source_name);
-                    if(!getline(is, line))
-                        throw runtime_error("Error reading "+source_name);
-                }                
-
-                acc = acc.substr(0, acc.find_first_of(" \t"));
-
-                return true;
-            };
-
-            auto OpenStream = [] (const string& file, boost::iostreams::filtering_istream& is) {
-                if(file != "-") {
-                    ifstream gztest(file, ios_base::in|ios_base::binary);
-                    if(!gztest.is_open())
-                        throw runtime_error("Error opening "+file);
-                    array<uint8_t,2> gzstart;
-                    if(!gztest.read(reinterpret_cast<char*>(gzstart.data()), 2))
-                        throw runtime_error("Invalid file "+file);
-                    bool gzipped = (gzstart[0] == 0x1f && gzstart[1] == 0x8b);
-                    gztest.close();
-
-                    ios_base::openmode mode = ios_base::in;
-                    if(gzipped)
-                        mode |= ios_base::binary;
-                    boost::iostreams::file_source f{file, mode};
-                    if(gzipped)
-                        is.push(boost::iostreams::gzip_decompressor());
-                    is.push(f);
-                } else {
-                    is.push(cin);
-                }
-
-                // do a quick check of validity on first character of the file
-                char c;
-                if(!(is >> c) || (c != '>' && c != '@'))
-                    throw runtime_error("Invalid reads format in "+file);
-
-                bool isfasta = (c == '>');
-                if(!isfasta)
-                    is.putback(c);
-
-                return isfasta;                
-            };
-
-            // checks if ids for paired reads are name[./]1 and name[./]2
-            auto MatchIds = [] (const string& acc1, const string& acc2) {
-                boost::regex re1("(.+)[./]1");
-                boost::cmatch matches1;
-                boost::regex re2("(.+)[./]2");
-                boost::cmatch matches2;
-                return (acc1 == acc2 || (boost::regex_match(acc1.c_str(), matches1, re1) && boost::regex_match(acc2.c_str(), matches2, re2) && matches1[1] == matches2[1]));
-            };
 
             array<CReadHolder,2> all_reads = {CReadHolder(true), CReadHolder(false)};
-            string acc1;
-            string read1;                
-            string acc2;
-            string read2;
-            for(const string& file : file_list) {
-                size_t total = all_reads[0].ReadNum()+all_reads[1].ReadNum();
-                size_t comma = file.find(',');
-                if(comma == string::npos) {
-                    boost::iostreams::filtering_istream is;
-                    bool isfasta = OpenStream(file, is);
-
-                    if(!m_usepairedends) {
-                        while(NextRead(acc1, read1, isfasta, is, file))
-                            InsertRead(read1, all_reads[1], file);
-                    } else {
-                        if(NextRead(acc1, read1, isfasta, is, file)) {
-                            while(NextRead(acc2, read2, isfasta, is, file)) {
-                                if(MatchIds(acc1, acc2)) {
-                                    InsertRead(read1, all_reads[0], file);
-                                    InsertRead(read2, all_reads[0], file);
-                                    NextRead(acc1, read1, isfasta, is, file);
-                                } else {
-                                    InsertRead(read1, all_reads[1], file);
-                                    acc1 = acc2;
-                                    read1 = read2;
-                                }
-                            }
-                            if(!read1.empty())
-                                InsertRead(read1, all_reads[1], file);
-                        }
-                    }
-                } else {
-                    boost::iostreams::filtering_istream is1;
-                    string file1 = file.substr(0,comma);
-                    bool isfasta1 = OpenStream(file1, is1);
-                    boost::iostreams::filtering_istream is2;
-                    string file2 = file.substr(comma+1);
-                    bool isfasta2 = OpenStream(file2, is2);
-                    while(NextRead(acc1, read1, isfasta1, is1, file1)) {
-                        if(NextRead(acc2, read2, isfasta2, is2, file2)) {
-                            InsertRead(read1, all_reads[0], file1);
-                            InsertRead(read2, all_reads[0], file2);
-                        } else {
-                            throw runtime_error("Files "+file+" contain different number of mates");
-                        }
-                    }
-                }
-                if(total == all_reads[0].ReadNum()+all_reads[1].ReadNum())
-                    throw runtime_error("File(s) "+file+" doesn't contain valid reads");
-            }
-
-            // divide reads into ncores chunks for multithreading
-            size_t job_length = (all_reads[0].ReadNum()+all_reads[1].ReadNum())/m_ncores+1;
-            job_length += job_length%2;
-            size_t num = 0;
-            for(CReadHolder::string_iterator is = all_reads[0].sbegin(); is != all_reads[0].send(); ++is, ++num) {
-                if(num%job_length == 0 || m_reads.empty())
-                    m_reads.push_back(array<CReadHolder,2>({CReadHolder(true), CReadHolder(false)}));
-                m_reads.back()[0].PushBack(is);
-            }
-            for(CReadHolder::string_iterator is = all_reads[1].sbegin(); is != all_reads[1].send(); ++is, ++num) {
-                if(num%job_length == 0 || m_reads.empty())
-                    m_reads.push_back(array<CReadHolder,2>({CReadHolder(true), CReadHolder(false)}));
-                m_reads.back()[1].PushBack(is);
-            }
-        }
-
-        //DEPRECATED
-        // Acquires reads from fasta or fastq
-        // file_list - file names (could be separated by comma for paired reads)
-        // isfasta - true for fasta file(s)
-        void ReadFastaOrFastq(const vector<string>& file_list, bool isfasta) {
-            auto NextRead = [] (string& acc, string& read, bool isfasta, boost::iostreams::filtering_istream& is, const string& source_name) {
-                acc.clear();
-                read.clear();
-
-                if(isfasta) {// fasta   
-                    string record;
-                    if(!getline(is, record, '>')) {
-                        if(is.eof() && !is.bad())
-                            return false;
-                        else
-                            throw runtime_error("Error reading "+source_name);
-                    }
-                    size_t first_ret = min(record.size(),record.find('\n'));
-                    if(first_ret == string::npos)
-                        throw runtime_error("Invalid fasta file format in "+source_name);
-                    acc = record.substr(0, first_ret);
-                    read = record.substr(first_ret+1);
-                    read.erase(remove(read.begin(),read.end(),'\n'),read.end());            
-                } else { // fastq 
-                    if(!getline(is, acc)) {
-                        if(is.eof() && !is.bad())
-                            return false;
-                        else
-                            throw runtime_error("Error reading "+source_name);
-                    }
-                    if(acc[0] != '@')
-                        throw runtime_error("Invalid fastq file format in "+source_name);
-                    if(!getline(is, read))
-                        throw runtime_error("Error reading "+source_name);
-                    string line;
-                    if(!getline(is, line) || line[0] != '+')
-                        throw runtime_error("Error reading "+source_name);
-                    if(!getline(is, line))
-                        throw runtime_error("Error reading "+source_name);
-                }                
-
-                acc = acc.substr(0, acc.find_first_of(" \t"));
-
-                return true;
-            };
-
-            auto OpenStream = [] (const string& file, bool isfasta, boost::iostreams::filtering_istream& is) {
-
-                ifstream gztest(file, ios_base::in|ios_base::binary);
-                if(!gztest.is_open())
-                    throw runtime_error("Error opening "+file);
-                array<uint8_t,2> gzstart;
-                if(!gztest.read(reinterpret_cast<char*>(gzstart.data()), 2))
-                    throw runtime_error("Invalid file "+file);
-                bool gzipped = (gzstart[0] == 0x1f && gzstart[1] == 0x8b);
-                gztest.close();
-
-                ios_base::openmode mode = ios_base::in;
-                if(gzipped)
-                    mode |= ios_base::binary;
-                boost::iostreams::file_source f{file, mode};
-                if(gzipped)
-                    is.push(boost::iostreams::gzip_decompressor());
-                is.push(f);
-
-                // do a quick check of validity on first character of the file
-                char c;
-                if(isfasta) {
-                    if(!(is >> c) || c != '>')
-                        throw runtime_error("Invalid fasta file format in "+file);
-                } else {
-                    if(!(is >> c) || c != '@')
-                        throw runtime_error("Invalid fastq file format in "+file);
-                    is.putback(c);
-                }                
-            };
-
-            // checks if ids for paired reads are name[./]1 and name[./]2
-            auto MatchIds = [] (const string& acc1, const string& acc2) {
-                boost::regex re1("(.+)[./]1");
-                boost::cmatch matches1;
-                boost::regex re2("(.+)[./]2");
-                boost::cmatch matches2;
-                return (acc1 == acc2 || (boost::regex_match(acc1.c_str(), matches1, re1) && boost::regex_match(acc2.c_str(), matches2, re2) && matches1[1] == matches2[1]));
-            };
-
-            array<CReadHolder,2> all_reads = {CReadHolder(true), CReadHolder(false)};
-            string acc1;
-            string read1;                
-            string acc2;
-            string read2;
-            for(const string& file : file_list) {
-                size_t total = all_reads[0].ReadNum()+all_reads[1].ReadNum();
-                size_t comma = file.find(',');
-                if(comma == string::npos) {
-                    boost::iostreams::filtering_istream is;
-                    OpenStream(file, isfasta, is);
-
-                    if(!m_usepairedends) {
-                        while(NextRead(acc1, read1, isfasta, is, file))
-                            InsertRead(read1, all_reads[1], file);
-                    } else {
-                        if(NextRead(acc1, read1, isfasta, is, file)) {
-                            while(NextRead(acc2, read2, isfasta, is, file)) {
-                                if(MatchIds(acc1, acc2)) {
-                                    InsertRead(read1, all_reads[0], file);
-                                    InsertRead(read2, all_reads[0], file);
-                                    NextRead(acc1, read1, isfasta, is, file);
-                                } else {
-                                    InsertRead(read1, all_reads[1], file);
-                                    acc1 = acc2;
-                                    read1 = read2;
-                                }
-                            }
-                            if(!read1.empty())
-                                InsertRead(read1, all_reads[1], file);
-                        }
-                    }
-                } else {
-                    boost::iostreams::filtering_istream is1;
-                    string file1 = file.substr(0,comma);
-                    OpenStream(file1, isfasta, is1);
-                    boost::iostreams::filtering_istream is2;
-                    string file2 = file.substr(comma+1);
-                    OpenStream(file2, isfasta, is2);
-                    while(NextRead(acc1, read1, isfasta, is1, file1)) {
-                        if(NextRead(acc2, read2, isfasta, is2, file2)) {
-                            InsertRead(read1, all_reads[0], file1);
-                            InsertRead(read2, all_reads[0], file2);
-                        } else {
-                            throw runtime_error("Files "+file+" contain different number of mates");
-                        }
-                    }
-                }
-                if(total == all_reads[0].ReadNum()+all_reads[1].ReadNum())
-                    throw runtime_error("File(s) "+file+" doesn't contain valid reads");
-            }
+            for(const string& file : file_list) 
+                ReadOneFile(file, all_reads, m_usepairedends);
 
             // divide reads into ncores chunks for multithreading
             size_t job_length = (all_reads[0].ReadNum()+all_reads[1].ReadNum())/m_ncores+1;
@@ -805,8 +620,9 @@ namespace DeBruijn {
         bool m_usepairedends;
         list<array<CReadHolder,2>> m_reads;
         int m_kmer_for_adapters;
-        CKmerMap<int> m_adapters;   
+        CKmerMap<int> m_adapters; 
+        bool m_silent;
     };
 
-}; // namespace
+} // namespace
 #endif /* _ReadsGetter_ */

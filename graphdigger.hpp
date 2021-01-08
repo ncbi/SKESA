@@ -1707,18 +1707,18 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
             return false;
         }
         
-        vector<Successor> GetReversibleNodeSuccessorsF(const Node& node, int* fork_infop = nullptr, bool check_extension = true) const {
+        vector<Successor> GetReversibleNodeSuccessorsF(const Node& node, int* fork_infop, bool check_forward_extension, bool check_backward_extension) const {
             if(fork_infop != nullptr)
                 *fork_infop = eNoFork;
             vector<Successor> neighbors = m_graph.GetNodeSuccessors(node);             
-            FilterNeighbors(neighbors, check_extension, 1.);
-            if(neighbors.size() > 1 && fork_infop != nullptr)
+            FilterNeighbors(neighbors, check_forward_extension, 1.);
+            if(neighbors.size() > 1 && fork_infop != nullptr && (LowCount() > 1 || m_graph.Abundance(neighbors[1].m_node) > 1))
                 *fork_infop |= eRightFork;            
 
             for(auto& neighbor : neighbors) {
                 vector<Successor> step_back = m_graph.GetNodeSuccessors(m_graph.ReverseComplement(neighbor.m_node));                
-                FilterNeighbors(step_back, check_extension, 1.);
-                if(step_back.size() > 1 && fork_infop != nullptr)
+                FilterNeighbors(step_back, check_backward_extension, 1.);
+                if(step_back.size() > 1 && fork_infop != nullptr && (LowCount() > 1 || m_graph.Abundance(step_back[1].m_node) > 1))
                     *fork_infop |= eLeftFork;                
 
                 bool found = false;
@@ -1762,6 +1762,7 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
             return neighbors;
         }
 
+        int LowCount() const { return m_low_count; }
         bool GoodNode(const Node& node) const { return m_graph.Abundance(node) >= m_low_count; }
         int HistMin() const { return m_hist_min; }
 
@@ -1782,6 +1783,10 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                          else
                              return abundancea > abundanceb;
                      });
+                if(LowCount() == 1 && m_graph.Abundance(successors.front().m_node) > 5) {
+                    for(int j = successors.size()-1; j > 0 && m_graph.Abundance(successors.back().m_node) == 1; --j) 
+                        successors.pop_back();            
+                }
                 for(int j = successors.size()-1; j > 0 && m_graph.Abundance(successors.back().m_node) <= m_fraction*abundance; --j) 
                     successors.pop_back();            
             }
@@ -1870,7 +1875,8 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
                     for(int j = 0; j < (int)successors.size(); ) {
                         double plusf = m_graph.PlusFraction(successors[j].m_node);
                         double minusf = 1.- plusf;
-                        if(min(plusf,minusf) < fraction*max(plusf,minusf))
+                        int abundancej = m_graph.Abundance(successors[j].m_node);
+                        if(abundancej > 1 && min(plusf,minusf) < fraction*max(plusf,minusf))
                             successors.erase(successors.begin()+j);
                         else
                             ++j;
@@ -3296,5 +3302,5 @@ The length of newly assembled sequence is stored in  m_left_extend/m_right_exten
         bool m_allow_snps;
     };
 
-}; // namespace
+} // namespace
 #endif /* _GraphDigger_ */
