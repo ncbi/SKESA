@@ -394,7 +394,7 @@ int main(int argc, const char* argv[]) {
         }
 
         if(argm.count("version")) {
-            cout << "SKESA 2.4.0" << endl;
+            cout << "SKESA 2.5.0" << endl;
 #ifdef SVN_REV
             cout << "SVN revision:" << SVN_REV << endl;
 #endif
