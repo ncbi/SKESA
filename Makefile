@@ -47,8 +47,7 @@ PLATFORM=$(shell uname -s)
 
 ifeq ($(PLATFORM),Linux)
 
-LIBS = $(VDB_LIB) -lncbi-ngs-c++-static -lncbi-vdb-static \
-       $(NGS_LIB) -lngs-c++-static \
+LIBS = $(NGS_LIB) $(VDB_LIB) -lncbi-ngs-c++ -lngs-c++ -lncbi-ngs-static -lncbi-vdb-static \
        -Wl,-Bstatic $(BOOST_LIB) \
        -lboost_program_options \
        -lboost_iostreams \
