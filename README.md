@@ -10,6 +10,11 @@ Alexandre Souvorov, Richa Agarwala and David J. Lipman.
 *Genome Biology* 2018 **19**:153.
 [doi.org/10.1186/s13059-018-1540-z](https://doi.org/10.1186/s13059-018-1540-z)
 
+Alexandre Souvorov, Richa Agarwala
+**SAUTE: sequence assembly using target enrichment.**
+BMC Bioinformatics **22**, 375 (2021). 
+[doi.org/10.1186/s12859-021-04174-9](https://doi.org/10.1186/s12859-021-04174-9)
+
 ## Introduction
 This repositiry is the home for two different short read assemblers and helper programs. These programs are based on de Bruijn graphs and share k-mer related code.
 
