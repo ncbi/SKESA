@@ -94,20 +94,20 @@ int main(int argc, const char* argv[])
 
     options_description assembly("Assembly options");
     assembly.add_options()
-        ("kmer", value<int>()->default_value(41), "Kmer length for assembly [integer]")
+        ("kmer", value<int>(), "Kmer length for assembly [integer]")
         ("min_count", value<int>()->default_value(2), "Minimal count for kmers retained for comparing alternate choices [integer]")
         ("vector_percent", value<double>()->default_value(0.05, "0.05"), "Percentage of reads containing 19-mer for the 19-mer to be considered a vector (1. disables) [float (0,1]]")
-        ("fraction", value<double>()->default_value(0.1, "0.1"), "Threshold for extension [float]")
+        ("fraction", value<double>()->default_value(0.1, "0.1"), "Threshold for extension")
         ("entropy", value<double>()->default_value(0.51, "0.51"), "Minimal entropy for a seed kmer [float]")
-        ("ext_len", value<int>()->default_value(2000), "Maximal length for extension [integer]")
+        ("ext_len", value<int>()->default_value(2000), "Maximal length for extension")
         ;
 
     options_description filter("Graph cleaning options");
     filter.add_options()
-        ("not_aligned_len", value<int>()->default_value(10), "Not aligned read length for break count [integer]")
-        ("not_aligned_count", value<int>()->default_value(3), "Number of not aligned reads to make a break [integer]")
-        ("aligned_count", value<int>()->default_value(2), "Number of aligned reads to confirm a connection [integer]")
-        ("max_path", value<int>()->default_value(1000), "Maximal number of path extensions allowed for a single filtering check [integer]")
+        ("not_aligned_len", value<int>()->default_value(10), "Not aligned read length for break count")
+        ("not_aligned_count", value<int>()->default_value(3), "Number of not aligned reads to make a break")
+        ("aligned_count", value<int>()->default_value(2), "Number of aligned reads to confirm a connection")
+        ("max_path", value<int>()->default_value(1000), "Maximal number of paths allowed in 1 step of filtering")
         ("no_filter_by_reads", "Don't use full length reads for variants filtering [flag]")
         ("no_filter_by_pairs", "Don't use mate pairs for variants filtering [flag]")
         ;
@@ -129,7 +129,7 @@ int main(int argc, const char* argv[])
         }
 
         if(argm.count("version")) {
-            cout << "gfa_connector 1.1.0" << endl;
+            cout << "gfa_connector 1.1.1" << endl;
 #ifdef SVN_REV
             cout << "SVN revision:" << SVN_REV << endl;
 #endif
@@ -160,7 +160,7 @@ int main(int argc, const char* argv[])
         int maxp = argm["max_path"].as<int>();
         bool no_reads = argm.count("no_filter_by_reads");
         bool no_pairs = argm.count("no_filter_by_pairs");
-        bool need_reads = !argm.count("dbg") || !no_reads || !no_pairs;
+        bool need_reads = !argm.count("kmer") || !argm.count("dbg") || !no_reads || !no_pairs;
         if(need_reads && !argm.count("reads") 
 #ifndef NO_NGS
            && !argm.count("sra_run")
@@ -251,10 +251,25 @@ int main(int argc, const char* argv[])
             reads.splice(reads.end(), readsgetter.Reads());
         }
 
-        int kmer_len = argm["kmer"].as<int>();
-        if(kmer_len%2 ==0) {
-            cerr << "Kmer must be an odd number" << endl;
-            return 1;
+        int kmer_len = 0;
+        if(argm.count("kmer")) {
+            kmer_len = argm["kmer"].as<int>();
+            if(kmer_len%2 ==0) {
+                cerr << "Kmer must be an odd number" << endl;
+                return 1;
+            }
+        } else {
+            double length = 0;
+            size_t reads_num = 0;
+            for(auto& r : reads) {
+                length += r[0].TotalSeq()+r[1].TotalSeq();
+                reads_num += r[0].ReadNum()+r[1].ReadNum();
+            }
+            int read_len = length/reads_num+0.5;
+            kmer_len = read_len/2;
+            if(kmer_len%2 == 0)
+                --kmer_len;
+            cerr << "Read length: " << read_len << " Kmer: " << kmer_len << endl;
         }
 
         unique_ptr<DBGraph> graphp;
