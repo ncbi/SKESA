@@ -108,11 +108,13 @@ kmercounter: kmercounter.o glb_align.o
 $(NGS_DIR)/ngs.done:
 	rm -fr $(NGS_DIR)
 	mkdir -p $(NGS_DIR)/ngs
-	mkdir $(BUILD_PATH)
-	mkdir $(NGS_PATH)
-	mkdir $(VDB_PATH)
+	mkdir  $(BUILD_PATH)
+	mkdir  $(NGS_PATH)
+	mkdir  $(VDB_PATH)
 	cd $(NGS_DIR)/ngs; git init; git remote add -f origin https://github.com/ncbi/ngs.git; git config core.sparseCheckout true; echo "ngs-sdk" >> .git/info/sparse-checkout; git pull origin master
 	cd $(NGS_DIR)/ngs/ngs-sdk; ./configure --prefix=$(NGS_PATH) --build-prefix=$(BUILD_PATH); make; make install
 	cd $(NGS_DIR); git clone https://github.com/ncbi/ncbi-vdb.git
 	cd $(NGS_DIR)/ncbi-vdb; ./configure --prefix=$(VDB_PATH) --build-prefix=$(BUILD_PATH); make; make install
+	cd $(NGS_DIR); git clone https://github.com/ncbi/sra-tools.git
+	cd $(NGS_DIR)/sra-tools; ./configure --prefix=$(VDB_PATH) --build-prefix=$(BUILD_PATH); make; make install
 	touch $@
