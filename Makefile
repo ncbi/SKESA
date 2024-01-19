@@ -30,24 +30,18 @@ BOOST_LIB := -L $(BOOST_PATH)/lib
 endif
 
 NGS_DIR := $(CURDIR)/NGS
-VDB_PATH := $(NGS_DIR)/vdb_out
-NGS_PATH := $(NGS_DIR)/ngs_out
-BUILD_PATH := $(NGS_DIR)/build
-
-VDB_INCL := -I $(VDB_PATH)/include
-VDB_LIB := -L $(VDB_PATH)/lib64
-NGS_INCL := -I $(NGS_PATH)/include
-NGS_LIB := -L $(NGS_PATH)/lib64
+NGS_INCL := -I $(NGS_DIR)/include
+NGS_LIB := -L $(NGS_DIR)/lib64
 
 CC = c++ -std=c++11 -fdiagnostics-color=never
 CFLAGS = -Wall -Wno-format-y2k  -pthread -fPIC -O3 -finline-functions -fstrict-aliasing \
-         -fomit-frame-pointer -msse4.2 $(BOOST_INCL) $(NGS_INCL) $(VDB_INCL)
+         -fomit-frame-pointer -msse4.2 $(BOOST_INCL) $(NGS_INCL)
 
 PLATFORM=$(shell uname -s)
 
 ifeq ($(PLATFORM),Linux)
 
-LIBS = $(NGS_LIB) $(VDB_LIB) -lncbi-ngs-c++ -lngs-c++ -lncbi-ngs-static -lncbi-vdb-static \
+LIBS = $(NGS_LIB) -lncbi-ngs-c++-static -lngs-c++-static -lncbi-ngs-static -lncbi-vdb-static \
        -Wl,-Bstatic $(BOOST_LIB) \
        -lboost_program_options \
        -lboost_iostreams \
@@ -88,11 +82,11 @@ skesa.o: common_util.hpp concurrenthash.hpp readsgetter.hpp ngs_includes.hpp cou
 skesa: skesa.o glb_align.o
 	$(CC) -o $@ $^ $(LIBS)
 
-saute.o: guidedassembler.hpp guidedgraph.hpp gfa.hpp common_util.hpp guidedpath_naa.hpp readsgetter.hpp ngs_includes.hpp concurrenthash.hpp counter.hpp graphdigger.hpp KmerInit.hpp DBGraph.hpp Integer.hpp LargeInt.hpp LargeInt1.hpp LargeInt2.hpp Model.hpp config.hpp Makefile
+saute.o: guidedassembler.hpp guidedgraph.hpp gfa.hpp common_util.hpp guidedpath_naa.hpp readsgetter.hpp ngs_includes.hpp concurrenthash.hpp counter.hpp graphdigger.hpp KmerInit.hpp DBGraph.hpp Integer.hpp LargeInt.hpp LargeInt1.hpp LargeInt2.hpp Model.hpp config.hpp Makefile $(NGS_DIR)/ngs.done
 saute: saute.o glb_align.o
 	$(CC) -o $@ $^ $(LIBS)
 
-saute_prot.o: guidedassembler.hpp guidedgraph.hpp genetic_code.hpp gfa.hpp common_util.hpp guidedpath_naa.hpp readsgetter.hpp ngs_includes.hpp concurrenthash.hpp counter.hpp graphdigger.hpp KmerInit.hpp DBGraph.hpp Integer.hpp LargeInt.hpp LargeInt1.hpp LargeInt2.hpp Model.hpp config.hpp Makefile
+saute_prot.o: guidedassembler.hpp guidedgraph.hpp genetic_code.hpp gfa.hpp common_util.hpp guidedpath_naa.hpp readsgetter.hpp ngs_includes.hpp concurrenthash.hpp counter.hpp graphdigger.hpp KmerInit.hpp DBGraph.hpp Integer.hpp LargeInt.hpp LargeInt1.hpp LargeInt2.hpp Model.hpp config.hpp Makefile $(NGS_DIR)/ngs.done
 saute_prot: saute_prot.o glb_align.o
 	$(CC) -o $@ $^ $(LIBS)
 
@@ -104,17 +98,15 @@ kmercounter.o: common_util.hpp concurrenthash.hpp readsgetter.hpp ngs_includes.h
 kmercounter: kmercounter.o glb_align.o
 	$(CC) -o $@ $^ $(LIBS)
 
-
 $(NGS_DIR)/ngs.done:
 	rm -fr $(NGS_DIR)
-	mkdir -p $(NGS_DIR)/ngs
-	mkdir  $(BUILD_PATH)
-	mkdir  $(NGS_PATH)
-	mkdir  $(VDB_PATH)
-	cd $(NGS_DIR)/ngs; git init; git remote add -f origin https://github.com/ncbi/ngs.git; git config core.sparseCheckout true; echo "ngs-sdk" >> .git/info/sparse-checkout; git pull origin master
-	cd $(NGS_DIR)/ngs/ngs-sdk; ./configure --prefix=$(NGS_PATH) --build-prefix=$(BUILD_PATH); make; make install
+	mkdir -p $(NGS_DIR)/build
+	mkdir $(NGS_DIR)/out
 	cd $(NGS_DIR); git clone https://github.com/ncbi/ncbi-vdb.git
-	cd $(NGS_DIR)/ncbi-vdb; ./configure --prefix=$(VDB_PATH) --build-prefix=$(BUILD_PATH); make; make install
 	cd $(NGS_DIR); git clone https://github.com/ncbi/sra-tools.git
-	cd $(NGS_DIR)/sra-tools; ./configure --prefix=$(VDB_PATH) --build-prefix=$(BUILD_PATH); make; make install
+	cd $(NGS_DIR)/ncbi-vdb; ./configure --prefix=$(NGS_DIR)/out --build-prefix=$(NGS_DIR)/build; make; make install
+	cd $(NGS_DIR)/sra-tools; ./configure --prefix=$(NGS_DIR)/out --build-prefix=$(NGS_DIR)/build
+	cd $(NGS_DIR)/sra-tools/ngs/ngs-sdk; make; make install
+	cd $(NGS_DIR)/out; mv lib64 include ../
+	cd $(NGS_DIR); rm -rf out build sra-tools ncbi-vdb
 	touch $@
