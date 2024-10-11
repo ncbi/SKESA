@@ -139,7 +139,7 @@ is expected to be same in files for both mates. Alternatively, a single file wit
 interleaved with first mate followed by the second, and the option `--use_paired_ends` must be used.
     
 A limitation of the current release is that in case multiple streams of paired reads are provided, it is assumed that all streams have the same insert size. 
-User can explicitly specify expected insert size for the reads (option --insert_size). Otherwise, a sample of input reads is used to estimate the expected 
+User can explicitly specify expected insert size for the reads (option `--insert_size`). Otherwise, a sample of input reads is used to estimate the expected 
 insert size. This sampling may lead to very small differences in assembly of the same read set if the order of reads is different and selected sample gives 
 a difference in expected insert size.
     
@@ -149,8 +149,8 @@ Two additional options users may wish to specify depending on the resources avai
 
 Remaining options are for debugging or modifying algorithm parameters.
 
-Output of assembly is contigs in fasta format. The definition line for contig has format Contig_<N>_<cnt> where <N> is consecutive integers starting from one 
-for numbering the contigs and <cnt> is the average count of k-mers in the contig using minimal k-mer length used in the assembly. Contigs are ordered lexicographically.
+Output of assembly is contigs in fasta format. The definition line for contig has format `Contig_<N>_<cnt>` where `<N>` is consecutive integers starting from one 
+for numbering the contigs and `<cnt>` is the average count of k-mers in the contig using minimal k-mer length used in the assembly. Contigs are ordered lexicographically.
 
 Limitations:
 1. SKESA is designed for haploid genomes. If it is used for diploid genomes or RNAseq reads, it should create breaks at all heterozygous sites in the genome 
@@ -201,9 +201,13 @@ Similar to [SKESA](#skesa-usage-examples), the user can provide reads using opti
 
 SAUTE has two flavors - one uses nucleotide reference sequences and the other protein sequences. In both cases, the output is nucleotide assemblies. Depending on the type of reference sequences, do one of the following:
 - Nucleotide references
+  ```bash
   saute --reads mates1.fa,mates2.fa --targets nuc_references.fa --gfa graph.gfa --all_variants assembly.fa
+  ```
 - Protein references
+  ```bash
   saute_prot --reads mates1.fa,mates2.fa --targets prot_references.fa --gfa graph.gfa --all_variants assembly.fa --genetic_code 1
+  ```
   The genetic code is one of the [NCBI genetic codes](https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi). The protein version translates on the fly the segments of de Bruijn graph to the protein space. Any indel changing the frame will corrupt the translated protein and will stop the assembly. There is an option `--allow_frameshifts` which will resume the correct translation after such an indel. It could be useful, for example, for genes with ribosomal slippage.  
 
 ## Command line options
