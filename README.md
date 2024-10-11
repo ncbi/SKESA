@@ -149,8 +149,8 @@ Two additional options users may wish to specify depending on the resources avai
 
 Remaining options are for debugging or modifying algorithm parameters.
 
-Output of assembly is contigs in fasta format. The definition line for contig has format Contig_<N>_<cnt> where <N> is consecutive integers starting from one 
-for numbering the contigs and <cnt> is the average count of k-mers in the contig using minimal k-mer length used in the assembly. Contigs are ordered lexicographically.
+Output of assembly is contigs in fasta format. The definition line for contig has format Contig_N_cnt where N is consecutive integers starting from one 
+for numbering the contigs and cnt is the average count of k-mers in the contig using minimal k-mer length used in the assembly. Contigs are ordered lexicographically.
 
 Limitations:
 1. SKESA is designed for haploid genomes. If it is used for diploid genomes or RNAseq reads, it should create breaks at all heterozygous sites in the genome 
