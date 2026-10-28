@@ -204,7 +204,7 @@ SAUTE has two flavors - one uses nucleotide reference sequences and the other pr
   saute --reads mates1.fa,mates2.fa --targets nuc_references.fa --gfa graph.gfa --all_variants assembly.fa
 - Protein references
   saute_prot --reads mates1.fa,mates2.fa --targets prot_references.fa --gfa graph.gfa --all_variants assembly.fa --genetic_code 1
-  The genetic code is one of the [NCBI genetic codes](https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi). The protein version translates on the fly the segments of de Bruijn graph to the protein space. Any indel changing the frame will corrupt the translated protein and will stop the assembly. There is an option `--allow_frameshifts` which will resume the correct translation after such an indel. It could be useful, for example, for genes with ribosomal slippage.  
+  The genetic code is one of the [NCBI genetic codes](https://www.ncbi.nlm.nih.gov/datasets/docs/v2/data-processing/taxonomy-processing/genetic-codes/). The protein version translates on the fly the segments of de Bruijn graph to the protein space. Any indel changing the frame will corrupt the translated protein and will stop the assembly. There is an option `--allow_frameshifts` which will resume the correct translation after such an indel. It could be useful, for example, for genes with ribosomal slippage.  
 
 ## Command line options
 ### Options shared by saute and saute_prot
